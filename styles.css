@@ -58,9 +58,12 @@ html,body{margin:0;height:100%;background:var(--bg-deep);overflow:hidden;font-fa
 .hint b{color:var(--text);}
 
 /* active layer pill */
-.active-pill{position:absolute;top:80px;right:28px;display:flex;gap:8px;z-index:6;}
-.pill{font-size:11px;padding:5px 10px;border-radius:999px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);color:var(--text-dim);transition:all .3s;}
+.active-pill{position:absolute;top:80px;right:28px;display:flex;gap:8px;z-index:9;}
+.pill{font-size:11px;padding:5px 10px;border-radius:999px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);color:var(--text-dim);transition:all .3s;cursor:pointer;user-select:none;}
+.pill:hover{border-color:rgba(255,255,255,0.35);color:var(--text);transform:translateY(-1px);}
+.pill:active{transform:translateY(0) scale(0.96);}
 .pill.on{color:#06121a;font-weight:600;}
+.pill.on:hover{filter:brightness(1.08);}
 .pill.temp.on{background:var(--temp);border-color:var(--temp);}
 .pill.precip.on{background:var(--precip);border-color:var(--precip);}
 .pill.wind.on{background:var(--wind);border-color:var(--wind);}

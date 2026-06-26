@@ -223,17 +223,23 @@ const cloudMesh = new THREE.Mesh(cloudGeo, cloudMat);
 cloudMesh.visible = false;
 world.scene().add(cloudMesh);
 
-function drawClouds(points) {
+function drawClouds(points, t = 0) {
   const ctx = cloudCtx;
+  // always fully clear first — redrawing from scratch every time keeps the layer crisp
+  // instead of smearing/accumulating into a messy haze
   ctx.clearRect(0, 0, cloudCanvas.width, cloudCanvas.height);
-  // soft drifting blobs, sized/opacity-scaled by real cloud-cover % per grid point
+  // soft blobs, sized/opacity-scaled by real cloud-cover % per grid point, with a gentle
+  // animated jitter + breathing so the layer feels alive without drifting off true geography
   points.forEach(p => {
     const cover = p.cloudCover ?? 0;
     if (cover < 8) return;
-    const x = ((p.lng + 180) / 360) * cloudCanvas.width;
-    const y = ((90 - p.lat) / 180) * cloudCanvas.height;
-    const r = 18 + (cover / 100) * 46;
-    const alpha = Math.min(0.75, 0.12 + (cover / 100) * 0.55);
+    const jx = Math.sin(t * 0.6 + p.lat * 0.4 + p.lng * 0.1) * 4;
+    const jy = Math.cos(t * 0.5 + p.lng * 0.4) * 2.5;
+    const x = ((p.lng + 180) / 360) * cloudCanvas.width + jx;
+    const y = ((90 - p.lat) / 180) * cloudCanvas.height + jy;
+    const breathe = 0.82 + Math.sin(t * 0.9 + p.lat + p.lng) * 0.18;
+    const r = (18 + (cover / 100) * 46) * breathe;
+    const alpha = Math.min(0.75, 0.12 + (cover / 100) * 0.55) * breathe;
     const grad = ctx.createRadialGradient(x, y, 0, x, y, r);
     grad.addColorStop(0, `rgba(255,255,255,${alpha})`);
     grad.addColorStop(1, 'rgba(255,255,255,0)');
@@ -253,11 +259,20 @@ function drawClouds(points) {
   cloudTexture.needsUpdate = true;
 }
 
-// slow independent drift, separate from the globe's own rotation — keeps clouds animated even when paused
-(function driftClouds() {
-  cloudMesh.rotation.y += 0.00025;
-  requestAnimationFrame(driftClouds);
-})();
+// animated clouds: redraw frequently (clearing fully each time, see above) so the layer stays
+// visually alive but never smears or drifts away from its real lat/lng — fixes the old
+// independent-mesh-rotation drift, which slid the cloud texture out of sync with geography
+let cloudAnimT = 0;
+let lastCloudDraw = 0;
+function animateClouds(now) {
+  if (cloudMesh.visible && gridCache.points && now - lastCloudDraw > 80) {
+    lastCloudDraw = now;
+    cloudAnimT += 0.08;
+    drawClouds(gridCache.points, cloudAnimT);
+  }
+  requestAnimationFrame(animateClouds);
+}
+requestAnimationFrame(animateClouds);
 
 // ---------- real ocean current arcs (static dataset, see currents.js) ----------
 
@@ -650,23 +665,35 @@ function updateHint() {
   hintText.textContent = on.length ? on.join(' + ') + ' active' : 'none active';
 }
 
-document.querySelectorAll('.spoke').forEach(spoke => {
-  spoke.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    const key = spoke.dataset.layer;
-    if (key === 'reset') {
-      Object.keys(layerState).forEach(k => layerState[k] = false);
-      Object.values(pills).forEach(p => p.classList.remove('on'));
-      Object.values(spokes).forEach(s => s.classList.remove('active'));
-      applyLayers();
-      updateHint();
-      return;
-    }
-    layerState[key] = !layerState[key];
-    pills[key].classList.toggle('on', layerState[key]);
-    spokes[key].classList.toggle('active', layerState[key]);
+// shared toggle so the radial spokes AND the pills (top-right toolbar) both drive layers —
+// pills act as direct one-tap activation buttons, like a real maps app's layer chips
+async function toggleLayer(key) {
+  if (key === 'reset') {
+    Object.keys(layerState).forEach(k => layerState[k] = false);
+    Object.values(pills).forEach(p => p.classList.remove('on'));
+    Object.values(spokes).forEach(s => s.classList.remove('active'));
+    applyLayers();
     updateHint();
-    await applyLayers();
+    return;
+  }
+  layerState[key] = !layerState[key];
+  pills[key].classList.toggle('on', layerState[key]);
+  spokes[key].classList.toggle('active', layerState[key]);
+  updateHint();
+  await applyLayers();
+}
+
+document.querySelectorAll('.spoke').forEach(spoke => {
+  spoke.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleLayer(spoke.dataset.layer);
+  });
+});
+
+Object.entries(pills).forEach(([key, pill]) => {
+  pill.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleLayer(key);
   });
 });
 
@@ -730,21 +757,28 @@ async function applyLayers() {
     world.heatmapsData([]);
   }
 
-  // wind arrows (oriented cones, pulsing via animateWindCones below)
+  // wind arrows (oriented cones that surge forward along the wind direction, like flowing gusts)
   if (layerState.wind) {
     const windPoints = points.filter(p => p.windSpeed > 1);
     world
       .customLayerData(windPoints)
       .customThreeObjectUpdate((obj, d) => {
         const alt = 0.03;
-        const p0 = world.getCoords(d.lat, d.lng, alt);
-        const dest = destinationPoint(d.lat, d.lng, (d.windDir + 180) % 360, 300);
-        const p1 = world.getCoords(dest.lat, dest.lng, alt);
+        const t = performance.now() / 1000;
+        const wave = Math.sin(t * 1.3 + d.lat * 0.5 + d.lng * 0.5);
+        const flow = (wave + 1) / 2; // 0..1 traveling wave, phase varies by location
+        const travel = 25 + flow * 200; // km — cone surges forward then eases back, simulating flow
+        const bearing = (d.windDir + 180) % 360;
+        const flowPos3 = destinationPoint(d.lat, d.lng, bearing, travel);
+        const aimPos3 = destinationPoint(d.lat, d.lng, bearing, travel + 320);
+        const p0 = world.getCoords(flowPos3.lat, flowPos3.lng, alt);
+        const p1 = world.getCoords(aimPos3.lat, aimPos3.lng, alt);
         obj.position.set(p0.x, p0.y, p0.z);
         obj.lookAt(p1.x, p1.y, p1.z);
-        const pulse = 1 + Math.sin(performance.now() / 450 + d.lat + d.lng) * 0.12;
         const base = obj.userData.baseScale || 1;
-        obj.scale.set(base * pulse, base * pulse, base * pulse);
+        const pulse = 0.82 + flow * 0.5;
+        obj.scale.set(base * pulse, base * pulse, base * pulse * 1.15);
+        if (obj.userData.material) obj.userData.material.opacity = 0.4 + flow * 0.5;
       })
       .customThreeObject(d => {
         const scale = Math.max(0.6, Math.min(2.6, d.windSpeed / 12));
@@ -758,6 +792,7 @@ async function applyLayers() {
         });
         const mesh = new THREE.Mesh(geometry, material);
         mesh.userData.baseScale = scale;
+        mesh.userData.material = material;
         mesh.scale.set(scale, scale, scale);
         return mesh;
       });
