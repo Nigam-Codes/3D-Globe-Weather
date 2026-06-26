@@ -3,6 +3,8 @@
 import * as THREE from 'three';
 import { CURRENT_PATHS, expandToSegments } from './currents.js';
 import { buildSolarSystem } from './solarSystem.js';
+import { COUNTRIES, CITIES, tierForAltitude } from './places.js';
+import { buildConstellations } from './constellations.js';
 
 const WMO_CODES = {
   0: 'Clear sky', 1: 'Mainly clear', 2: 'Partly cloudy', 3: 'Overcast',
@@ -17,15 +19,26 @@ const WMO_CODES = {
   95: 'Thunderstorm', 96: 'Thunderstorm w/ hail', 99: 'Severe thunderstorm w/ hail',
 };
 
-const DEFAULT_CITIES = [
-  { name: 'Tokyo', lat: 35.6762, lng: 139.6503 },
-  { name: 'São Paulo', lat: -23.5505, lng: -46.6333 },
-  { name: 'Lagos', lat: 6.5244, lng: 3.3792 },
-  { name: 'New York', lat: 40.7128, lng: -74.0060 },
-  { name: 'London', lat: 51.5074, lng: -0.1278 },
-  { name: 'Mumbai', lat: 19.0760, lng: 72.8777 },
-  { name: 'Sydney', lat: -33.8688, lng: 151.2093 },
-];
+// ---------- pins + dashboard (persisted locally so they survive reloads) ----------
+
+const PIN_KEY = 'weatherGlobePins';
+const DASH_KEY = 'weatherGlobeDashboard';
+
+function loadJSON(key) {
+  try { return JSON.parse(localStorage.getItem(key)) || []; } catch { return []; }
+}
+let pins = loadJSON(PIN_KEY);
+let dashboardItems = loadJSON(DASH_KEY);
+function savePins() { localStorage.setItem(PIN_KEY, JSON.stringify(pins)); }
+function saveDashboard() { localStorage.setItem(DASH_KEY, JSON.stringify(dashboardItems)); }
+function sameCoord(a, b) { return Math.abs(a.lat - b.lat) < 0.001 && Math.abs(a.lng - b.lng) < 0.001; }
+
+// ---------- zoom-based level of detail ----------
+
+let currentTier = 1;
+function visibleCities() {
+  return CITIES.filter(c => c.tier <= currentTier);
+}
 
 // ---------- small color helpers (no external deps) ----------
 
@@ -163,12 +176,33 @@ let userInteracted = false;
   });
 });
 
-// ---------- background solar system (Sun + planets, real positions today) ----------
+// gentle "breathing" atmosphere glow — purely cosmetic, keeps the globe feeling alive even when idle
+(function breatheAtmosphere() {
+  const t = performance.now() / 1000;
+  world.atmosphereAltitude(0.18 + Math.sin(t * 0.5) * 0.02);
+  requestAnimationFrame(breatheAtmosphere);
+})();
+
+// zoom-driven level of detail: re-render cities/labels only when the altitude crosses a tier boundary
+function updateTierFromAltitude() {
+  const alt = world.pointOfView().altitude;
+  const tier = tierForAltitude(alt);
+  if (tier !== currentTier) {
+    currentTier = tier;
+    renderPoints();
+    refreshLabels();
+  }
+}
+world.controls().addEventListener('change', updateTierFromAltitude);
+setInterval(updateTierFromAltitude, 800); // fallback for programmatic fly-tos that skip 'change' ticks
+
+// ---------- background solar system (Sun + planets, real positions today) + constellations ----------
 
 buildSolarSystem(world.scene());
+buildConstellations(world.scene());
 const legendNote = document.getElementById('legendNote');
 if (legendNote) {
-  legendNote.textContent = 'Sun & planets: real positions for today, via astronomy-engine · Ocean currents: documented current systems (not live telemetry) · Clouds: stylized, driven by live cloud-cover data';
+  legendNote.textContent = 'Sun & planets: real positions for today, via astronomy-engine · Ocean currents: documented current systems (not live telemetry) · Clouds: stylized, driven by live cloud-cover data · Country/city labels & constellations: curated reference sets, illustrative placement';
 }
 
 // ---------- stylized cloud layer (real cloud-cover %, drawn as a drifting canvas texture) ----------
@@ -229,22 +263,60 @@ function drawClouds(points) {
 
 const CURRENT_ARCS = expandToSegments(CURRENT_PATHS);
 
-// city + selection markers (rendered as WebGL points, not DOM elements)
+// city + pin + selection markers (rendered as WebGL points, not DOM elements)
 let activePoint = null; // { lat, lng, name } for the currently selected location
+let activePinId = null; // set when the selected point is an existing saved pin
 
 function renderPoints() {
-  const points = [...DEFAULT_CITIES];
+  const points = [...visibleCities()];
+  pins.forEach(p => points.push({ ...p, isPin: true }));
   if (activePoint) points.push({ ...activePoint, selected: true });
   world
     .pointsData(points)
     .pointLat('lat')
     .pointLng('lng')
     .pointAltitude(0.005)
-    .pointRadius(d => d.selected ? 0.5 : 0.35)
-    .pointColor(d => d.selected ? '#ffffff' : '#5fd0ff')
+    .pointRadius(d => d.selected ? 0.5 : d.isPin ? 0.45 : 0.3)
+    .pointColor(d => d.selected ? '#ffffff' : d.isPin ? '#ff5ca8' : '#5fd0ff')
     .pointLabel(d => d.name || '')
     .pointsMerge(false)
-    .onPointClick(d => selectLocation(d.lat, d.lng, d.name || null));
+    .onPointClick(d => selectLocation(d.lat, d.lng, d.name || null, d.isPin ? d.id : null));
+  renderRings();
+}
+
+// animated pulsing "ping" rings under the selected location + every saved pin (mockup-style emphasis)
+function renderRings() {
+  const ringTargets = [];
+  if (activePoint) ringTargets.push({ lat: activePoint.lat, lng: activePoint.lng, color: 'rgba(255,255,255,0.7)' });
+  pins.forEach(p => ringTargets.push({ lat: p.lat, lng: p.lng, color: 'rgba(255,92,168,0.65)' }));
+  world
+    .ringsData(ringTargets)
+    .ringLat('lat')
+    .ringLng('lng')
+    .ringColor(d => d.color)
+    .ringMaxRadius(2.4)
+    .ringPropagationSpeed(2.2)
+    .ringRepeatPeriod(1500);
+}
+
+// country + city text labels — countries always show when the layer is on; city text only
+// appears once zoomed in past world view, so detail "loads in" as the user zooms (city dots
+// themselves are always tier-filtered in renderPoints, independent of this label toggle)
+function refreshLabels() {
+  if (!layerState.labels) { world.labelsData([]); return; }
+  const cityLabels = currentTier >= 2 ? visibleCities().map(c => ({ ...c, kind: 'city' })) : [];
+  const countryLabels = COUNTRIES.map(c => ({ ...c, kind: 'country' }));
+  world
+    .labelsData([...countryLabels, ...cityLabels])
+    .labelLat('lat')
+    .labelLng('lng')
+    .labelText('name')
+    .labelSize(d => d.kind === 'country' ? 1.15 : 0.55)
+    .labelColor(d => d.kind === 'country' ? 'rgba(255,207,92,0.85)' : 'rgba(232,237,245,0.85)')
+    .labelDotRadius(d => d.kind === 'country' ? 0 : 0.25)
+    .labelAltitude(0.006)
+    .labelResolution(2)
+    .labelIncludeDot(d => d.kind !== 'country');
 }
 renderPoints();
 
@@ -263,12 +335,14 @@ function fmtCoord(lat, lng) {
   return `${Math.abs(lat).toFixed(1)}°${latDir}, ${Math.abs(lng).toFixed(1)}°${lngDir}`;
 }
 
-async function selectLocation(lat, lng, name) {
+async function selectLocation(lat, lng, name, pinId = null) {
   // fly to the point
   world.pointOfView({ lat, lng, altitude: 1.6 }, 1200);
 
   activePoint = { lat, lng, name };
+  activePinId = pinId;
   renderPoints();
+  updateDetailActionButtons();
 
   document.getElementById('dName').textContent = name || fmtCoord(lat, lng);
   document.getElementById('dSub').textContent = 'Local conditions · loading…';
@@ -341,6 +415,154 @@ document.getElementById('timeSlider').addEventListener('input', (e) => {
 
 document.getElementById('detailClose').addEventListener('click', () => detail.classList.remove('open'));
 
+// ---------- pins + dashboard actions ----------
+
+const pinActionBtn = document.getElementById('pinAction');
+const dashActionBtn = document.getElementById('dashAction');
+
+function updateDetailActionButtons() {
+  if (activePinId) {
+    pinActionBtn.textContent = '🗑 Remove pin';
+    pinActionBtn.classList.add('active');
+  } else {
+    pinActionBtn.textContent = '📌 Drop pin';
+    pinActionBtn.classList.remove('active');
+  }
+  const inDash = activePoint && dashboardItems.some(d => sameCoord(d, activePoint));
+  dashActionBtn.textContent = inDash ? '★ Saved to dashboard' : '★ Save to dashboard';
+  dashActionBtn.classList.toggle('active', inDash);
+}
+
+pinActionBtn.addEventListener('click', () => {
+  if (!activePoint) return;
+  if (activePinId) {
+    pins = pins.filter(p => p.id !== activePinId);
+    savePins();
+    activePinId = null;
+  } else {
+    const fallback = activePoint.name || fmtCoord(activePoint.lat, activePoint.lng);
+    const label = window.prompt('Name this pin:', fallback) || fallback;
+    const pin = { id: 'pin_' + Date.now(), name: label, lat: activePoint.lat, lng: activePoint.lng };
+    pins.push(pin);
+    savePins();
+    activePinId = pin.id;
+  }
+  renderPoints();
+  updateDetailActionButtons();
+  renderDashboardPanelIfOpen();
+});
+
+dashActionBtn.addEventListener('click', () => {
+  if (!activePoint) return;
+  const idx = dashboardItems.findIndex(d => sameCoord(d, activePoint));
+  if (idx >= 0) {
+    dashboardItems.splice(idx, 1);
+  } else {
+    dashboardItems.push({ name: activePoint.name || fmtCoord(activePoint.lat, activePoint.lng), lat: activePoint.lat, lng: activePoint.lng });
+  }
+  saveDashboard();
+  updateDetailActionButtons();
+  renderDashboardPanelIfOpen(true);
+});
+
+// ---------- dashboard panel ----------
+
+const dashboardPanel = document.getElementById('dashboard');
+const dashboardList = document.getElementById('dashboardList');
+const dashboardToggle = document.getElementById('dashboardToggle');
+const dashboardClose = document.getElementById('dashboardClose');
+let dashboardRefreshTimer = null;
+
+dashboardToggle.addEventListener('click', () => {
+  dashboardPanel.classList.add('open');
+  renderDashboardPanel();
+  if (dashboardRefreshTimer) clearInterval(dashboardRefreshTimer);
+  dashboardRefreshTimer = setInterval(renderDashboardPanel, 10 * 60 * 1000);
+});
+dashboardClose.addEventListener('click', () => {
+  dashboardPanel.classList.remove('open');
+  if (dashboardRefreshTimer) { clearInterval(dashboardRefreshTimer); dashboardRefreshTimer = null; }
+});
+
+function renderDashboardPanelIfOpen(force) {
+  if (force || dashboardPanel.classList.contains('open')) renderDashboardPanel();
+}
+
+async function renderDashboardPanel() {
+  const entries = [
+    ...dashboardItems.map(d => ({ ...d, isPin: false })),
+    ...pins.map(p => ({ ...p, isPin: true })),
+  ];
+  if (!entries.length) {
+    dashboardList.innerHTML = '<div class="dash-empty">Nothing saved yet — select a place and tap "Save to dashboard", or drop a pin.</div>';
+    return;
+  }
+  dashboardList.innerHTML = entries.map((e, i) =>
+    `<div class="dash-card" data-idx="${i}">
+       <div class="dremove" data-idx="${i}">✕</div>
+       <div class="dn">${e.name}${e.isPin ? '<span class="pin-tag">PIN</span>' : ''}</div>
+       <div class="dm"><span>loading…</span><span>${fmtCoord(e.lat, e.lng)}</span></div>
+     </div>`
+  ).join('');
+
+  dashboardList.querySelectorAll('.dremove').forEach(btn => {
+    btn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const entry = entries[Number(btn.dataset.idx)];
+      if (entry.isPin) {
+        pins = pins.filter(p => p.id !== entry.id);
+        savePins();
+        renderPoints();
+      } else {
+        dashboardItems = dashboardItems.filter(d => !sameCoord(d, entry));
+        saveDashboard();
+      }
+      updateDetailActionButtons();
+      renderDashboardPanel();
+    });
+  });
+  dashboardList.querySelectorAll('.dash-card').forEach(card => {
+    card.addEventListener('click', () => {
+      const entry = entries[Number(card.dataset.idx)];
+      selectLocation(entry.lat, entry.lng, entry.name, entry.isPin ? entry.id : null);
+    });
+  });
+
+  try {
+    const lats = entries.map(e => e.lat).join(',');
+    const lngs = entries.map(e => e.lng).join(',');
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lats}&longitude=${lngs}&current=temperature_2m,weather_code`;
+    const res = await fetch(url);
+    const data = await res.json();
+    const list = Array.isArray(data) ? data : [data];
+    dashboardList.querySelectorAll('.dash-card').forEach((card, i) => {
+      const c = list[i]?.current;
+      const span = card.querySelector('.dm span');
+      if (c && typeof c.temperature_2m === 'number') {
+        span.textContent = `${Math.round(c.temperature_2m)}°C · ${WMO_CODES[c.weather_code] ?? ''}`;
+      } else {
+        span.textContent = '—';
+      }
+    });
+  } catch (err) {
+    dashboardList.querySelectorAll('.dm span').forEach(span => { span.textContent = '—'; });
+  }
+}
+
+// ---------- map-style zoom controls ----------
+
+document.getElementById('zoomIn').addEventListener('click', () => {
+  const pov = world.pointOfView();
+  world.pointOfView({ lat: pov.lat, lng: pov.lng, altitude: Math.max(0.25, pov.altitude * 0.65) }, 500);
+});
+document.getElementById('zoomOut').addEventListener('click', () => {
+  const pov = world.pointOfView();
+  world.pointOfView({ lat: pov.lat, lng: pov.lng, altitude: Math.min(3.2, pov.altitude / 0.65) }, 500);
+});
+document.getElementById('zoomHome').addEventListener('click', () => {
+  world.pointOfView({ lat: 15, lng: 10, altitude: 2.4 }, 900);
+});
+
 // ---------- search ----------
 
 const searchInput = document.getElementById('searchInput');
@@ -404,13 +626,14 @@ document.querySelector('.stage').addEventListener('click', (e) => {
   if (!radialRoot.contains(e.target)) radialRoot.classList.remove('open');
 });
 
-const layerState = { temp: false, precip: false, wind: false, clouds: false, currents: false };
+const layerState = { temp: false, precip: false, wind: false, clouds: false, currents: false, labels: false };
 const pills = {
   temp: document.getElementById('pillTemp'),
   precip: document.getElementById('pillPrecip'),
   wind: document.getElementById('pillWind'),
   clouds: document.getElementById('pillClouds'),
   currents: document.getElementById('pillCurrents'),
+  labels: document.getElementById('pillLabels'),
 };
 const spokes = {
   temp: document.getElementById('spokeTemp'),
@@ -418,6 +641,7 @@ const spokes = {
   wind: document.getElementById('spokeWind'),
   clouds: document.getElementById('spokeClouds'),
   currents: document.getElementById('spokeCurrents'),
+  labels: document.getElementById('spokeLabels'),
 };
 const hintText = document.getElementById('hintText');
 
@@ -466,6 +690,7 @@ function applyCurrentArcs() {
 
 async function applyLayers() {
   applyCurrentArcs();
+  refreshLabels();
 
   const anyHeat = layerState.temp || layerState.precip;
   const needsGrid = anyHeat || layerState.wind || layerState.clouds;
