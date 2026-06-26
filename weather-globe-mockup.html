@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>3D Globe Weather — Radial UI Mockup</title>
+<style>
+  :root{
+    --bg-deep:#05070f;
+    --panel-bg: rgba(15,20,32,0.86);
+    --accent:#5fd0ff;
+    --temp:#ff8a4c;
+    --precip:#4ca3ff;
+    --wind:#7bffb0;
+    --cloud:#cfe3ff;
+    --current:#2de0c9;
+    --text:#e8edf5;
+    --text-dim:#8b96ab;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;height:100%;background:var(--bg-deep);overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:var(--text);}
+  .stage{position:relative;width:100%;height:100vh;display:flex;align-items:center;justify-content:center;}
+
+  /* starfield, two layers for parallax twinkle */
+  .stars, .stars2{position:absolute;inset:0;background-image:
+      radial-gradient(1px 1px at 20% 30%, #fff 100%, transparent),
+      radial-gradient(1px 1px at 70% 80%, #fff 100%, transparent),
+      radial-gradient(1px 1px at 40% 60%, #fff 100%, transparent),
+      radial-gradient(1px 1px at 85% 15%, #fff 100%, transparent),
+      radial-gradient(1px 1px at 10% 90%, #fff 100%, transparent),
+      radial-gradient(1px 1px at 60% 10%, #fff 100%, transparent),
+      radial-gradient(1px 1px at 90% 50%, #fff 100%, transparent),
+      radial-gradient(1px 1px at 30% 75%, #fff 100%, transparent);
+    background-size: 600px 600px;}
+  .stars{opacity:0.5;animation:twinkle 5s ease-in-out infinite;}
+  .stars2{opacity:0.3;background-size:380px 380px;background-position:60px 90px;animation:twinkle 7s ease-in-out infinite reverse;}
+  @keyframes twinkle{0%,100%{opacity:0.55;}50%{opacity:0.22;}}
+
+  /* globe */
+  .globe-wrap{position:relative;width:440px;height:440px;perspective:1200px;transition:transform .25s ease;}
+  .globe{
+    width:100%;height:100%;border-radius:50%;position:relative;
+    background:
+      radial-gradient(circle at 35% 30%, #2c5d8f 0%, #1a3a5c 35%, #0c1f33 70%, #060f1c 100%);
+    box-shadow: 0 0 60px rgba(95,208,255,0.18), inset -30px -30px 80px rgba(0,0,0,0.55), inset 20px 20px 60px rgba(140,200,255,0.12);
+    overflow:hidden;
+    animation: autorotate 32s linear infinite, glow 6s ease-in-out infinite;
+  }
+  .globe.dragging{animation-play-state:paused;}
+  @keyframes autorotate{ from{ transform: rotateY(0deg);} to{ transform: rotateY(360deg);} }
+  @keyframes glow{0%,100%{box-shadow:0 0 60px rgba(95,208,255,0.18), inset -30px -30px 80px rgba(0,0,0,0.55), inset 20px 20px 60px rgba(140,200,255,0.12);}50%{box-shadow:0 0 90px rgba(95,208,255,0.3), inset -30px -30px 80px rgba(0,0,0,0.55), inset 20px 20px 60px rgba(140,200,255,0.18);}}
+
+  .globe-grid{
+    position:absolute;inset:0;border-radius:50%;
+    background-image: repeating-linear-gradient(0deg, transparent 0 38px, rgba(255,255,255,0.05) 38px 39px),
+                       repeating-linear-gradient(90deg, transparent 0 38px, rgba(255,255,255,0.05) 38px 39px);
+    animation: spin 38s linear infinite;
+    mix-blend-mode: screen;
+  }
+  .continents{
+    position:absolute;inset:0;border-radius:50%;
+    background:
+      radial-gradient(ellipse 60px 40px at 30% 35%, rgba(120,170,110,0.55), transparent 70%),
+      radial-gradient(ellipse 50px 70px at 60% 25%, rgba(120,170,110,0.45), transparent 70%),
+      radial-gradient(ellipse 70px 50px at 70% 60%, rgba(120,170,110,0.5), transparent 70%),
+      radial-gradient(ellipse 40px 60px at 25% 70%, rgba(120,170,110,0.4), transparent 70%);
+    animation: spin 38s linear infinite;
+  }
+  @keyframes spin{ from{ transform: rotate(0deg);} to{ transform: rotate(360deg);} }
+
+  /* layer overlays toggled by radial menu */
+  .layer{position:absolute;inset:0;border-radius:50%;opacity:0;transition:opacity .5s ease;pointer-events:none;}
+  .layer.temp{background: radial-gradient(circle at 40% 35%, rgba(255,138,76,0.55), transparent 55%), radial-gradient(circle at 65% 60%, rgba(255,70,70,0.4), transparent 60%);}
+  .layer.precip{background: radial-gradient(circle at 30% 60%, rgba(76,163,255,0.5), transparent 55%), radial-gradient(circle at 70% 30%, rgba(76,163,255,0.35), transparent 55%);}
+  .layer.wind{background-image: repeating-linear-gradient(115deg, rgba(123,255,176,0.45) 0 2px, transparent 2px 26px); background-size:200% 200%; animation: windflow 4s linear infinite;}
+  @keyframes windflow{ from{background-position:0 0;} to{background-position:-120px 60px;} }
+
+  /* clouds: drifting blobs */
+  .layer.clouds{
+    background-image:
+      radial-gradient(ellipse 70px 30px at 20% 30%, rgba(255,255,255,0.7), transparent 70%),
+      radial-gradient(ellipse 90px 36px at 60% 20%, rgba(255,255,255,0.55), transparent 70%),
+      radial-gradient(ellipse 60px 26px at 80% 55%, rgba(255,255,255,0.5), transparent 70%),
+      radial-gradient(ellipse 80px 30px at 35% 70%, rgba(255,255,255,0.45), transparent 70%),
+      radial-gradient(ellipse 50px 22px at 10% 85%, rgba(255,255,255,0.4), transparent 70%);
+    background-size:160% 160%;
+    animation: clouddrift 18s linear infinite;
+    filter: blur(1px);
+  }
+  @keyframes clouddrift{ from{background-position:0% 0%;} to{background-position:-160% 40%;} }
+
+  /* ocean currents: animated flow lines via SVG dash offset, see svg below */
+  .layer.currents{}
+  .currents-svg{position:absolute;inset:0;width:100%;height:100%;opacity:0;transition:opacity .5s ease;pointer-events:none;}
+  .currents-svg.active{opacity:1;}
+  .currents-svg path{fill:none;stroke:var(--current);stroke-width:1.4;stroke-linecap:round;opacity:0.75;stroke-dasharray:6 10;animation:flow 2.4s linear infinite;}
+  .currents-svg path.p2{animation-duration:3.1s;animation-direction:reverse;opacity:0.55;}
+  .currents-svg path.p3{animation-duration:1.9s;opacity:0.6;}
+  @keyframes flow{ to{ stroke-dashoffset:-32; } }
+
+  .layer.active{opacity:1;}
+
+  /* markers */
+  .marker{position:absolute;width:10px;height:10px;border-radius:50%;background:var(--accent);box-shadow:0 0 10px var(--accent);cursor:pointer;transform:translate(-50%,-50%);}
+  .marker::after{content:'';position:absolute;inset:-6px;border-radius:50%;border:1px solid var(--accent);opacity:0.6;animation:ping 2.2s ease-out infinite;}
+  @keyframes ping{0%{transform:scale(0.6);opacity:0.8;}100%{transform:scale(2.4);opacity:0;}}
+  .marker.m1{top:34%;left:42%;} .marker.m2{top:55%;left:64%;} .marker.m3{top:68%;left:33%;}
+  .marker.selected{background:#fff;box-shadow:0 0 14px #fff,0 0 24px var(--accent);}
+
+  /* top label */
+  .title{position:absolute;top:22px;left:28px;font-size:14px;font-weight:600;color:var(--text);letter-spacing:.02em;}
+  .title span{color:var(--text-dim);font-weight:400;display:block;font-size:11.5px;margin-top:2px;transition:opacity .2s;}
+
+  /* search bar, top center */
+  .search-wrap{position:absolute;top:22px;left:50%;transform:translateX(-50%);width:280px;z-index:6;}
+  .search-box{position:relative;}
+  .search-box input{
+    width:100%;padding:10px 14px 10px 36px;border-radius:999px;border:1px solid rgba(255,255,255,0.14);
+    background:rgba(15,20,32,0.7);color:var(--text);font-size:13px;outline:none;backdrop-filter:blur(8px);
+    transition:border-color .25s,box-shadow .25s;
+  }
+  .search-box input:focus{border-color:var(--accent);box-shadow:0 0 0 4px rgba(95,208,255,0.12);}
+  .search-box .sic{position:absolute;left:13px;top:50%;transform:translateY(-50%);font-size:13px;opacity:0.6;}
+  .suggestions{display:flex;gap:6px;justify-content:center;margin-top:8px;flex-wrap:wrap;}
+  .chip{font-size:10.5px;padding:4px 10px;border-radius:999px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);color:var(--text-dim);cursor:pointer;transition:all .2s;}
+  .chip:hover{color:var(--text);border-color:var(--accent);background:rgba(95,208,255,0.1);}
+
+  /* active layer pill */
+  .active-pill{position:absolute;top:24px;right:28px;display:flex;gap:6px;flex-wrap:wrap;max-width:230px;justify-content:flex-end;}
+  .pill{font-size:10.5px;padding:5px 9px;border-radius:999px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);color:var(--text-dim);transition:all .3s;}
+  .pill.on{color:#06121a;font-weight:600;}
+  .pill.temp.on{background:var(--temp);border-color:var(--temp);}
+  .pill.precip.on{background:var(--precip);border-color:var(--precip);}
+  .pill.wind.on{background:var(--wind);border-color:var(--wind);}
+  .pill.clouds.on{background:var(--cloud);border-color:var(--cloud);}
+  .pill.currents.on{background:var(--current);border-color:var(--current);}
+
+  /* ---- radial menu ---- */
+  .radial-root{position:absolute;bottom:46px;right:54px;width:64px;height:64px;}
+  .fab{
+    width:64px;height:64px;border-radius:50%;background:linear-gradient(145deg,#1b2740,#0e1726);
+    border:1px solid rgba(255,255,255,0.12);display:flex;align-items:center;justify-content:center;
+    cursor:pointer;box-shadow:0 6px 24px rgba(0,0,0,0.5), 0 0 0 0 rgba(95,208,255,0.4);
+    transition: transform .35s cubic-bezier(.34,1.56,.64,1), box-shadow .35s ease, background .35s ease;
+    position:relative;z-index:5;
+    animation: fabPulse 3.2s ease-in-out infinite;
+  }
+  @keyframes fabPulse{0%,100%{box-shadow:0 6px 24px rgba(0,0,0,0.5), 0 0 0 0 rgba(95,208,255,0.25);}50%{box-shadow:0 6px 24px rgba(0,0,0,0.5), 0 0 0 9px rgba(95,208,255,0.08);}}
+  .radial-root.open .fab{animation:none;}
+  .fab:hover{box-shadow:0 6px 24px rgba(0,0,0,0.5), 0 0 0 6px rgba(95,208,255,0.12);}
+  .fab svg{transition:transform .4s cubic-bezier(.34,1.56,.64,1);}
+  .radial-root.open .fab{transform:rotate(45deg);background:linear-gradient(145deg,#26344f,#121d30);}
+
+  .spoke{
+    position:absolute;top:32px;left:32px;width:52px;height:52px;border-radius:50%;
+    display:flex;align-items:center;justify-content:center;flex-direction:column;
+    background:var(--panel-bg);border:1px solid rgba(255,255,255,0.1);
+    transform:translate(-50%,-50%) scale(0);opacity:0;
+    transition: transform .45s cubic-bezier(.34,1.56,.64,1), opacity .25s ease, background .25s ease, border-color .25s ease;
+    cursor:pointer; z-index:4; backdrop-filter:blur(6px);
+  }
+  .spoke .ic{font-size:16px;line-height:1;}
+  .spoke .lb{font-size:8px;margin-top:2px;color:var(--text-dim);letter-spacing:.02em;}
+  .radial-root.open .spoke{opacity:1;}
+  .radial-root.open .spoke.s1{transform:translate(-50%,-50%) translate(-10px,-120px) scale(1); transition-delay:.02s;}
+  .radial-root.open .spoke.s2{transform:translate(-50%,-50%) translate(-51px,-109px) scale(1); transition-delay:.06s;}
+  .radial-root.open .spoke.s3{transform:translate(-50%,-50%) translate(-85px,-85px) scale(1); transition-delay:.10s;}
+  .radial-root.open .spoke.s4{transform:translate(-50%,-50%) translate(-109px,-51px) scale(1); transition-delay:.14s;}
+  .radial-root.open .spoke.s5{transform:translate(-50%,-50%) translate(-120px,-10px) scale(1); transition-delay:.18s;}
+  .radial-root.open .spoke.s6{transform:translate(-50%,-50%) translate(-116px,31px) scale(1); transition-delay:.22s;}
+
+  .spoke.active{border-color:var(--accent);}
+  .spoke.s1.active{background:rgba(255,138,76,0.25);border-color:var(--temp);}
+  .spoke.s2.active{background:rgba(76,163,255,0.25);border-color:var(--precip);}
+  .spoke.s3.active{background:rgba(123,255,176,0.25);border-color:var(--wind);}
+  .spoke.s4.active{background:rgba(207,227,255,0.25);border-color:var(--cloud);}
+  .spoke.s5.active{background:rgba(45,224,201,0.25);border-color:var(--current);}
+
+  /* detail panel */
+  .detail{
+    position:absolute;top:0;right:0;height:100%;width:310px;background:var(--panel-bg);
+    border-left:1px solid rgba(255,255,255,0.08);
+    transform:translateX(100%);transition:transform .45s cubic-bezier(.2,.8,.2,1);
+    padding:26px 22px;backdrop-filter:blur(10px);z-index:8;overflow-y:auto;
+  }
+  .detail.open{transform:translateX(0);}
+  .detail h3{margin:0 0 2px;font-size:18px;}
+  .detail .sub{font-size:12px;color:var(--text-dim);margin-bottom:18px;}
+  .detail .big{font-size:42px;font-weight:300;margin:6px 0;transition:opacity .15s;}
+  .detail .row{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.06);font-size:13px;}
+  .detail .row span:first-child{color:var(--text-dim);}
+  .detail .close{position:absolute;top:18px;right:18px;cursor:pointer;color:var(--text-dim);font-size:18px;}
+
+  /* time slider */
+  .timeblock{margin-top:20px;padding-top:16px;border-top:1px solid rgba(255,255,255,0.08);}
+  .timeblock .tlabel{font-size:11px;color:var(--text-dim);margin-bottom:10px;display:flex;justify-content:space-between;}
+  .timeblock .tlabel b{color:var(--accent);font-weight:600;}
+  input[type=range]{width:100%;-webkit-appearance:none;height:4px;border-radius:2px;background:rgba(255,255,255,0.12);outline:none;}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border-radius:50%;background:var(--accent);box-shadow:0 0 8px var(--accent);cursor:pointer;transition:transform .15s;}
+  input[type=range]::-webkit-slider-thumb:hover{transform:scale(1.2);}
+  .ticks{display:flex;justify-content:space-between;margin-top:6px;font-size:9.5px;color:var(--text-dim);}
+
+  /* ---- orrery: live solar-system orientation widget ---- */
+  .orrery-wrap{position:absolute;bottom:30px;left:30px;width:160px;height:160px;z-index:3;}
+  .orrery-label{position:absolute;top:-22px;left:0;font-size:9.5px;color:var(--text-dim);letter-spacing:.04em;}
+  .orrery-label b{color:var(--text);}
+  .orrery{position:relative;width:100%;height:100%;border-radius:50%;background:radial-gradient(circle, rgba(255,255,255,0.03), transparent 70%);}
+  .sun{position:absolute;top:50%;left:50%;width:9px;height:9px;border-radius:50%;background:#ffd86b;box-shadow:0 0 10px #ffd86b,0 0 18px rgba(255,216,107,0.6);transform:translate(-50%,-50%);}
+  .orbit{position:absolute;top:50%;left:50%;border:1px solid rgba(255,255,255,0.12);border-radius:50%;transform-origin:center;}
+  .orbit .planet{position:absolute;top:0;left:50%;border-radius:50%;transform:translate(-50%,-50%);}
+  .o-mercury{width:36px;height:36px;margin:-18px 0 0 -18px;animation:orb 7s linear infinite;}
+  .o-venus{width:58px;height:58px;margin:-29px 0 0 -29px;animation:orb 11s linear infinite;}
+  .o-earth{width:84px;height:84px;margin:-42px 0 0 -42px;animation:orb 18s linear infinite;}
+  .o-mars{width:112px;height:112px;margin:-56px 0 0 -56px;animation:orb 34s linear infinite;}
+  .o-jupiter{width:148px;height:148px;margin:-74px 0 0 -74px;animation:orb 70s linear infinite;}
+  @keyframes orb{ from{transform:rotate(0deg);} to{transform:rotate(360deg);} }
+  .p-mercury{width:4px;height:4px;background:#b9b3a8;}
+  .p-venus{width:5px;height:5px;background:#e8c989;}
+  .p-earth{width:6px;height:6px;background:#5fb6ff;box-shadow:0 0 8px #5fb6ff,0 0 14px rgba(95,182,255,0.7);}
+  .p-mars{width:4.5px;height:4.5px;background:#e07a5f;}
+  .p-jupiter{width:7px;height:7px;background:#d8b894;}
+
+  /* hidden state notice when fab open, dim background slightly */
+  .scrim{position:absolute;inset:0;background:transparent;transition:background .3s;pointer-events:none;z-index:2;}
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="stars"></div>
+  <div class="stars2"></div>
+  <div class="scrim" id="scrim"></div>
+
+  <div class="title">Weather Globe <span id="statusLine">drag to rotate · scroll to zoom · open the radial menu for layers</span></div>
+
+  <div class="search-wrap">
+    <div class="search-box">
+      <span class="sic">🔎</span>
+      <input id="searchInput" list="cityList" placeholder="Search a city...">
+      <datalist id="cityList">
+        <option value="Tokyo"><option value="São Paulo"><option value="Lagos"><option value="Paris">
+      </datalist>
+    </div>
+    <div class="suggestions">
+      <div class="chip" data-city="Tokyo">Tokyo</div>
+      <div class="chip" data-city="São Paulo">São Paulo</div>
+      <div class="chip" data-city="Lagos">Lagos</div>
+      <div class="chip" data-city="Paris">Paris</div>
+    </div>
+  </div>
+
+  <div class="active-pill">
+    <div class="pill temp" id="pillTemp">Temp</div>
+    <div class="pill precip" id="pillPrecip">Precip</div>
+    <div class="pill wind" id="pillWind">Wind</div>
+    <div class="pill clouds" id="pillClouds">Clouds</div>
+    <div class="pill currents" id="pillCurrents">Currents</div>
+  </div>
+
+  <div class="globe-wrap" id="globeWrap">
+    <div class="globe" id="globe">
+      <div class="globe-grid"></div>
+      <div class="continents"></div>
+      <div class="layer temp" id="layerTemp"></div>
+      <div class="layer precip" id="layerPrecip"></div>
+      <div class="layer wind" id="layerWind"></div>
+      <div class="layer clouds" id="layerClouds"></div>
+      <svg class="currents-svg" id="layerCurrents" viewBox="0 0 100 100">
+        <path class="p1" d="M5,60 Q25,50 45,62 T90,55"/>
+        <path class="p2" d="M2,75 Q30,82 55,72 T95,78"/>
+        <path class="p3" d="M8,20 Q28,28 50,18 T92,24"/>
+      </svg>
+      <div class="marker m1" data-name="Tokyo" data-temp="24" data-cond="Light rain" data-wind="12 km/h"></div>
+      <div class="marker m2" data-name="São Paulo" data-temp="29" data-cond="Partly cloudy" data-wind="8 km/h"></div>
+      <div class="marker m3" data-name="Lagos" data-temp="31" data-cond="Clear" data-wind="15 km/h"></div>
+    </div>
+  </div>
+
+  <!-- orrery: live planetary orientation -->
+  <div class="orrery-wrap">
+    <div class="orrery-label"><b>Solar System</b> · live orientation</div>
+    <div class="orrery">
+      <div class="sun"></div>
+      <div class="orbit o-mercury"><div class="planet p-mercury"></div></div>
+      <div class="orbit o-venus"><div class="planet p-venus"></div></div>
+      <div class="orbit o-earth"><div class="planet p-earth"></div></div>
+      <div class="orbit o-mars"><div class="planet p-mars"></div></div>
+      <div class="orbit o-jupiter"><div class="planet p-jupiter"></div></div>
+    </div>
+  </div>
+
+  <!-- radial menu -->
+  <div class="radial-root" id="radialRoot">
+    <div class="spoke s1" data-layer="temp" id="spokeTemp"><div class="ic">🌡️</div><div class="lb">TEMP</div></div>
+    <div class="spoke s2" data-layer="precip" id="spokePrecip"><div class="ic">🌧️</div><div class="lb">RAIN</div></div>
+    <div class="spoke s3" data-layer="wind" id="spokeWind"><div class="ic">💨</div><div class="lb">WIND</div></div>
+    <div class="spoke s4" data-layer="clouds" id="spokeClouds"><div class="ic">☁️</div><div class="lb">CLOUD</div></div>
+    <div class="spoke s5" data-layer="currents" id="spokeCurrents"><div class="ic">🌊</div><div class="lb">CURR</div></div>
+    <div class="spoke s6" data-layer="reset" id="spokeReset"><div class="ic">⨯</div><div class="lb">CLEAR</div></div>
+    <div class="fab" id="fab">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="#e8edf5" stroke-width="2" stroke-linecap="round"/></svg>
+    </div>
+  </div>
+
+  <!-- detail panel -->
+  <div class="detail" id="detail">
+    <div class="close" id="detailClose">✕</div>
+    <h3 id="dName">Tokyo</h3>
+    <div class="sub" id="dSub">Local conditions · now</div>
+    <div class="big" id="dTemp">24°C</div>
+    <div class="row"><span>Condition</span><span id="dCond">Light rain</span></div>
+    <div class="row"><span>Wind</span><span id="dWind">12 km/h</span></div>
+    <div class="row"><span>Humidity</span><span id="dHum">71%</span></div>
+    <div class="row"><span>Precipitation</span><span id="dPrecip">2.4 mm</span></div>
+
+    <div class="timeblock">
+      <div class="tlabel">Forecast scrub <b id="tNow">Now</b></div>
+      <input type="range" id="timeSlider" min="0" max="8" step="1" value="0">
+      <div class="ticks"><span>Now</span><span>+12h</span><span>+24h</span><span>+36h</span><span>+48h</span></div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const root = document.getElementById('radialRoot');
+  const scrim = document.getElementById('scrim');
+  document.getElementById('fab').addEventListener('click', () => {
+    root.classList.toggle('open');
+    scrim.style.background = root.classList.contains('open') ? 'rgba(0,0,0,0.15)' : 'transparent';
+  });
+
+  const layers = {
+    temp: { el: document.getElementById('layerTemp'), spoke: document.getElementById('spokeTemp'), pill: document.getElementById('pillTemp') },
+    precip: { el: document.getElementById('layerPrecip'), spoke: document.getElementById('spokePrecip'), pill: document.getElementById('pillPrecip') },
+    wind: { el: document.getElementById('layerWind'), spoke: document.getElementById('spokeWind'), pill: document.getElementById('pillWind') },
+    clouds: { el: document.getElementById('layerClouds'), spoke: document.getElementById('spokeClouds'), pill: document.getElementById('pillClouds') },
+    currents: { el: document.getElementById('layerCurrents'), spoke: document.getElementById('spokeCurrents'), pill: document.getElementById('pillCurrents') },
+  };
+  const statusLine = document.getElementById('statusLine');
+
+  function updateStatus(){
+    const on = Object.keys(layers).filter(k => layers[k].el.classList.contains('active'));
+    statusLine.textContent = on.length ? `layers active: ${on.join(', ')}` : 'drag to rotate · scroll to zoom · open the radial menu for layers';
+  }
+
+  document.querySelectorAll('.spoke').forEach(spoke => {
+    spoke.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const key = spoke.dataset.layer;
+      if (key === 'reset') {
+        Object.values(layers).forEach(l => { l.el.classList.remove('active'); l.spoke.classList.remove('active'); l.pill.classList.remove('on'); });
+      } else {
+        const l = layers[key];
+        l.el.classList.toggle('active');
+        l.spoke.classList.toggle('active');
+        l.pill.classList.toggle('on');
+      }
+      updateStatus();
+    });
+  });
+
+  // ---- city data + time slider ----
+  const cityData = {
+    'Tokyo':     { lat:'34%', lon:'42%', base:24, cond:['Light rain','Light rain','Cloudy','Cloudy','Clear','Clear','Partly cloudy','Light rain','Cloudy'], wind:[12,11,14,10,9,13,15,12,11], hum:71 },
+    'São Paulo': { lat:'55%', lon:'64%', base:29, cond:['Partly cloudy','Partly cloudy','Clear','Clear','Thunderstorms','Thunderstorms','Cloudy','Partly cloudy','Clear'], wind:[8,9,7,10,18,16,9,8,7], hum:64 },
+    'Lagos':     { lat:'68%', lon:'33%', base:31, cond:['Clear','Clear','Hazy','Hazy','Clear','Partly cloudy','Clear','Clear','Hazy'], wind:[15,14,16,13,12,15,17,14,13], hum:58 },
+    'Paris':     { lat:'28%', lon:'50%', base:19, cond:['Cloudy','Light rain','Light rain','Cloudy','Clear','Clear','Cloudy','Light rain','Cloudy'], wind:[10,12,11,9,8,10,13,11,9], hum:68 },
+  };
+  const tempDeltas = [0,-1,-2,-3,1,2,0,-1,-2]; // shape of temp curve across 9 timepoints (0..48h, step 6h)
+  const tlabels = ['Now','+6h','+12h','+18h','+24h','+30h','+36h','+42h','+48h'];
+
+  const detail = document.getElementById('detail');
+  const dName = document.getElementById('dName');
+  const dTemp = document.getElementById('dTemp');
+  const dCond = document.getElementById('dCond');
+  const dWind = document.getElementById('dWind');
+  const dHum = document.getElementById('dHum');
+  const dSub = document.getElementById('dSub');
+  const tNow = document.getElementById('tNow');
+  const slider = document.getElementById('timeSlider');
+  let currentCity = null;
+
+  function renderCityAt(idx){
+    if (!currentCity) return;
+    const c = cityData[currentCity];
+    const t = c.base + tempDeltas[idx];
+    dTemp.style.opacity = 0;
+    setTimeout(() => {
+      dTemp.textContent = `${t}°C`;
+      dCond.textContent = c.cond[idx];
+      dWind.textContent = `${c.wind[idx]} km/h`;
+      dHum.textContent = `${c.hum - idx}%`;
+      dTemp.style.opacity = 1;
+    }, 90);
+    tNow.textContent = tlabels[idx];
+    dSub.textContent = idx === 0 ? 'Local conditions · now' : `Forecast · ${tlabels[idx]} from now`;
+  }
+
+  function openCity(name){
+    currentCity = name;
+    const c = cityData[name];
+    if (!c) return;
+    document.querySelectorAll('.marker').forEach(m => m.classList.toggle('selected', m.dataset.name === name));
+    dName.textContent = name;
+    slider.value = 0;
+    renderCityAt(0);
+    detail.classList.add('open');
+  }
+
+  slider.addEventListener('input', () => renderCityAt(parseInt(slider.value, 10)));
+
+  document.querySelectorAll('.marker').forEach(m => {
+    m.addEventListener('click', (e) => { e.stopPropagation(); openCity(m.dataset.name); });
+  });
+  document.querySelectorAll('.chip').forEach(chip => {
+    chip.addEventListener('click', () => { document.getElementById('searchInput').value = chip.dataset.city; openCity(chip.dataset.city); });
+  });
+  document.getElementById('searchInput').addEventListener('change', (e) => {
+    if (cityData[e.target.value]) openCity(e.target.value);
+  });
+  document.getElementById('detailClose').addEventListener('click', () => detail.classList.remove('open'));
+
+  // close radial menu when clicking elsewhere on stage
+  document.querySelector('.stage').addEventListener('click', (e) => {
+    if (!root.contains(e.target)) { root.classList.remove('open'); scrim.style.background = 'transparent'; }
+  });
+
+  // drag-to-rotate (pauses ambient auto-rotation while dragging)
+  const globe = document.getElementById('globe');
+  let dragging = false, lastX = 0, rotY = 0;
+  globe.addEventListener('mousedown', (e) => { dragging = true; lastX = e.clientX; globe.classList.add('dragging'); });
+  window.addEventListener('mouseup', () => { dragging = false; globe.classList.remove('dragging'); });
+  window.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    rotY += (e.clientX - lastX) * 0.3;
+    lastX = e.clientX;
+    globe.style.transform = `rotateY(${rotY}deg)`;
+  });
+  globe.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const wrap = document.getElementById('globeWrap');
+    const current = parseFloat((wrap.style.transform || '').replace(/[^0-9.]/g,'') || 1) || 1;
+    let next = current + (e.deltaY < 0 ? 0.06 : -0.06);
+    next = Math.min(1.6, Math.max(0.7, next));
+    wrap.style.transform = `scale(${next})`;
+  }, { passive:false });
+</script>
+</body>
+</html>

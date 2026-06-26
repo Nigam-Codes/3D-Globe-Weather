@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3D Globe Weather</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="stage">
+  <div id="globeViz"></div>
+
+  <div class="title">Weather Globe <span>drag to rotate · scroll to zoom · click anywhere for conditions</span></div>
+  <div class="legend" id="legendNote"></div>
+
+  <div class="search-wrap">
+    <input id="searchInput" type="text" placeholder="Search a city..." autocomplete="off">
+    <div id="searchResults" class="search-results"></div>
+  </div>
+
+  <div class="active-pill">
+    <div class="pill temp" id="pillTemp">Temp</div>
+    <div class="pill precip" id="pillPrecip">Precip</div>
+    <div class="pill wind" id="pillWind">Wind</div>
+    <div class="pill clouds" id="pillClouds">Clouds</div>
+    <div class="pill currents" id="pillCurrents">Currents</div>
+  </div>
+
+  <div class="hint">Layers: <b id="hintText">none active</b></div>
+
+  <!-- radial menu -->
+  <div class="radial-root" id="radialRoot">
+    <div class="spoke s1" data-layer="temp" id="spokeTemp"><div class="ic">🌡️</div><div class="lb">TEMP</div></div>
+    <div class="spoke s2" data-layer="precip" id="spokePrecip"><div class="ic">🌧️</div><div class="lb">RAIN</div></div>
+    <div class="spoke s3" data-layer="wind" id="spokeWind"><div class="ic">💨</div><div class="lb">WIND</div></div>
+    <div class="spoke s4" data-layer="clouds" id="spokeClouds"><div class="ic">☁️</div><div class="lb">CLOUDS</div></div>
+    <div class="spoke s5" data-layer="currents" id="spokeCurrents"><div class="ic">🌊</div><div class="lb">CURRENT</div></div>
+    <div class="spoke s6" data-layer="reset" id="spokeReset"><div class="ic">⨯</div><div class="lb">CLEAR</div></div>
+    <div class="fab" id="fab">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="#e8edf5" stroke-width="2" stroke-linecap="round"/></svg>
+    </div>
+  </div>
+
+  <!-- detail panel -->
+  <div class="detail" id="detail">
+    <div class="close" id="detailClose">✕</div>
+    <h3 id="dName">—</h3>
+    <div class="sub" id="dSub">Local conditions</div>
+    <div class="big" id="dTemp">—</div>
+    <div class="row"><span>Condition</span><span id="dCond">—</span></div>
+    <div class="row"><span>Wind</span><span id="dWind">—</span></div>
+    <div class="row"><span>Humidity</span><span id="dHumidity">—</span></div>
+    <div class="row"><span>Precipitation</span><span id="dPrecip">—</span></div>
+    <div class="timeblock">
+      <div class="trow"><span id="tWhen">Now</span><span id="tDelta" class="muted"></span></div>
+      <input type="range" id="timeSlider" min="0" max="8" step="1" value="0">
+      <div class="ticks"><span>Now</span><span>+12h</span><span>+24h</span><span>+36h</span><span>+48h</span></div>
+    </div>
+  </div>
+
+  <div id="loadingBadge" class="loading-badge">Loading…</div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.180.0/build/three.module.js",
+    "astronomy-engine": "https://cdn.jsdelivr.net/npm/astronomy-engine@2.1.19/esm/astronomy.js"
+  }
+}
+</script>
+<script src="https://unpkg.com/globe.gl"></script>
+<script type="module" src="app.js"></script>
+</body>
+</html>

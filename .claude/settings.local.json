@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -sI \"https://unpkg.com/globe.gl\")",
+      "Bash(curl -sI \"https://unpkg.com/three@0.160.0/build/three.min.js\")",
+      "Bash(curl -sL \"https://unpkg.com/globe.gl\" -o /tmp/globe.gl.min.js)",
+      "Read(//tmp/**)",
+      "Bash(curl -s \"https://unpkg.com/globe.gl@2.46.1/package.json\")",
+      "Bash(curl -sL \"https://unpkg.com/three/package.json\")",
+      "Bash(curl -sI \"https://unpkg.com/three@0.180.0/build/three.min.js\")",
+      "Bash(curl -sI \"https://unpkg.com/three@0.180.0/build/three.js\")",
+      "Bash(curl -sI \"https://unpkg.com/three@0.180.0/build/three.module.js\")",
+      "Bash(curl -sI \"https://unpkg.com/three@0.180.0/build/three.core.js\")",
+      "Bash(curl -s \"https://unpkg.com/three@0.180.0/\")",
+      "PowerShell(Start-Process \"chrome.exe\" -ArgumentList \"http://localhost:5173\")",
+      "Bash(curl -s \"https://unpkg.com/three-globe@2.45.2/example/html-markers/index.html\" -o /tmp/html-markers.html)",
+      "PowerShell($wshell = New-Object -ComObject wscript.shell; $wshell.AppActivate\\('3D Globe Weather'\\) | Out-Null)",
+      "PowerShell(Start-Process \"chrome.exe\" -ArgumentList \"--new-tab\",\"http://localhost:5173/?v=2\")"
+    ]
+  }
+}
