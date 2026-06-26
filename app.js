@@ -134,7 +134,27 @@ async function fetchGridWeather() {
   return points;
 }
 
-// ---------- great-circle helper (for wind arrow orientation) ----------
+// ---------- great-circle helpers ----------
+
+function haversineKm(lat1, lng1, lat2, lng2) {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+// greedy label decluttering: keep items in priority order, dropping any item that
+// falls within minKm of an already-kept item — stops nearby labels (e.g. New York +
+// Philadelphia at city zoom) from stacking on top of each other
+function declutter(items, minKm) {
+  const kept = [];
+  for (const item of items) {
+    if (kept.every(k => haversineKm(k.lat, k.lng, item.lat, item.lng) > minKm)) kept.push(item);
+  }
+  return kept;
+}
 
 function destinationPoint(lat, lng, bearingDeg, distanceKm) {
   const R = 6371;
@@ -168,6 +188,26 @@ world.controls().autoRotate = true;
 world.controls().autoRotateSpeed = 0.4;
 world.controls().enableDamping = true;
 world.pointOfView({ lat: 15, lng: 10, altitude: 2.4 }, 0);
+
+// the basemap is a fixed-resolution raster texture (no tile pyramid like Google/Apple Maps),
+// so zooming in past its native resolution just turns it to mush — clamp the closest the
+// camera can scroll-zoom to, which keeps the surface looking sharp at all times
+const MIN_ALTITUDE = 0.28;
+world.controls().minDistance = world.getGlobeRadius() * (1 + MIN_ALTITUDE);
+
+// sharpen the basemap: enable anisotropic filtering + mipmapping once the texture has
+// loaded, so the surface stays crisp at the oblique grazing angles you get near the horizon
+(function sharpenGlobeTexture() {
+  const mat = world.globeMaterial();
+  if (mat && mat.map) {
+    const maxAniso = world.renderer().capabilities.getMaxAnisotropy();
+    mat.map.anisotropy = maxAniso;
+    mat.map.minFilter = THREE.LinearMipmapLinearFilter;
+    mat.map.needsUpdate = true;
+    return;
+  }
+  setTimeout(sharpenGlobeTexture, 200);
+})();
 
 let userInteracted = false;
 ['pointerdown', 'wheel'].forEach(evt => {
@@ -319,8 +359,14 @@ function renderRings() {
 // themselves are always tier-filtered in renderPoints, independent of this label toggle)
 function refreshLabels() {
   if (!layerState.labels) { world.labelsData([]); return; }
-  const cityLabels = currentTier >= 2 ? visibleCities().map(c => ({ ...c, kind: 'city' })) : [];
-  const countryLabels = COUNTRIES.map(c => ({ ...c, kind: 'country' }));
+  // min separation shrinks as the user zooms in further, so closely-packed cities
+  // declutter at world view but can all show once there's screen room for them
+  const CITY_MIN_SEP_KM = { 1: 900, 2: 220, 3: 55 };
+  const rawCityLabels = currentTier >= 2 ? visibleCities().map(c => ({ ...c, kind: 'city' })) : [];
+  // cities are already ordered by rough size/importance (lower tier = bigger), so that
+  // order doubles as priority for which label wins when two are too close together
+  const cityLabels = declutter(rawCityLabels, CITY_MIN_SEP_KM[currentTier] ?? 220);
+  const countryLabels = declutter(COUNTRIES.map(c => ({ ...c, kind: 'country' })), 140);
   world
     .labelsData([...countryLabels, ...cityLabels])
     .labelLat('lat')
@@ -330,7 +376,7 @@ function refreshLabels() {
     .labelColor(d => d.kind === 'country' ? 'rgba(255,207,92,0.85)' : 'rgba(232,237,245,0.85)')
     .labelDotRadius(d => d.kind === 'country' ? 0 : 0.25)
     .labelAltitude(0.006)
-    .labelResolution(2)
+    .labelResolution(3)
     .labelIncludeDot(d => d.kind !== 'country');
 }
 renderPoints();
@@ -568,7 +614,7 @@ async function renderDashboardPanel() {
 
 document.getElementById('zoomIn').addEventListener('click', () => {
   const pov = world.pointOfView();
-  world.pointOfView({ lat: pov.lat, lng: pov.lng, altitude: Math.max(0.25, pov.altitude * 0.65) }, 500);
+  world.pointOfView({ lat: pov.lat, lng: pov.lng, altitude: Math.max(MIN_ALTITUDE, pov.altitude * 0.65) }, 500);
 });
 document.getElementById('zoomOut').addEventListener('click', () => {
   const pov = world.pointOfView();
@@ -630,16 +676,9 @@ document.addEventListener('click', (e) => {
   if (!e.target.closest('.search-wrap')) searchResults.classList.remove('open');
 });
 
-// ---------- radial menu + layers ----------
-
-const radialRoot = document.getElementById('radialRoot');
-document.getElementById('fab').addEventListener('click', (e) => {
-  e.stopPropagation();
-  radialRoot.classList.toggle('open');
-});
-document.querySelector('.stage').addEventListener('click', (e) => {
-  if (!radialRoot.contains(e.target)) radialRoot.classList.remove('open');
-});
+// ---------- layers ----------
+// the pill row (top-right toolbar) is the sole activation control for layers —
+// each pill is a direct one-tap toggle, like a real maps app's layer chips.
 
 const layerState = { temp: false, precip: false, wind: false, clouds: false, currents: false, labels: false };
 const pills = {
@@ -650,14 +689,6 @@ const pills = {
   currents: document.getElementById('pillCurrents'),
   labels: document.getElementById('pillLabels'),
 };
-const spokes = {
-  temp: document.getElementById('spokeTemp'),
-  precip: document.getElementById('spokePrecip'),
-  wind: document.getElementById('spokeWind'),
-  clouds: document.getElementById('spokeClouds'),
-  currents: document.getElementById('spokeCurrents'),
-  labels: document.getElementById('spokeLabels'),
-};
 const hintText = document.getElementById('hintText');
 
 function updateHint() {
@@ -665,36 +696,30 @@ function updateHint() {
   hintText.textContent = on.length ? on.join(' + ') + ' active' : 'none active';
 }
 
-// shared toggle so the radial spokes AND the pills (top-right toolbar) both drive layers —
-// pills act as direct one-tap activation buttons, like a real maps app's layer chips
 async function toggleLayer(key) {
   if (key === 'reset') {
     Object.keys(layerState).forEach(k => layerState[k] = false);
     Object.values(pills).forEach(p => p.classList.remove('on'));
-    Object.values(spokes).forEach(s => s.classList.remove('active'));
     applyLayers();
     updateHint();
     return;
   }
   layerState[key] = !layerState[key];
   pills[key].classList.toggle('on', layerState[key]);
-  spokes[key].classList.toggle('active', layerState[key]);
   updateHint();
   await applyLayers();
 }
-
-document.querySelectorAll('.spoke').forEach(spoke => {
-  spoke.addEventListener('click', (e) => {
-    e.stopPropagation();
-    toggleLayer(spoke.dataset.layer);
-  });
-});
 
 Object.entries(pills).forEach(([key, pill]) => {
   pill.addEventListener('click', (e) => {
     e.stopPropagation();
     toggleLayer(key);
   });
+});
+
+document.getElementById('pillClear').addEventListener('click', (e) => {
+  e.stopPropagation();
+  toggleLayer('reset');
 });
 
 function applyCurrentArcs() {

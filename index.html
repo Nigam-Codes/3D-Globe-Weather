@@ -19,12 +19,13 @@
   </div>
 
   <div class="active-pill">
-    <div class="pill temp" id="pillTemp">Temp</div>
-    <div class="pill precip" id="pillPrecip">Precip</div>
-    <div class="pill wind" id="pillWind">Wind</div>
-    <div class="pill clouds" id="pillClouds">Clouds</div>
-    <div class="pill currents" id="pillCurrents">Currents</div>
-    <div class="pill labels" id="pillLabels">Labels</div>
+    <div class="pill temp" id="pillTemp" data-layer="temp">Temp</div>
+    <div class="pill precip" id="pillPrecip" data-layer="precip">Precip</div>
+    <div class="pill wind" id="pillWind" data-layer="wind">Wind</div>
+    <div class="pill clouds" id="pillClouds" data-layer="clouds">Clouds</div>
+    <div class="pill currents" id="pillCurrents" data-layer="currents">Currents</div>
+    <div class="pill labels" id="pillLabels" data-layer="labels">Labels</div>
+    <div class="pill clear" id="pillClear" title="Clear all layers">Clear</div>
   </div>
 
   <div class="hint">Layers: <b id="hintText">none active</b></div>
@@ -36,20 +37,6 @@
     <button id="zoomIn" title="Zoom in">+</button>
     <button id="zoomOut" title="Zoom out">−</button>
     <button id="zoomHome" title="Reset view">⌂</button>
-  </div>
-
-  <!-- radial menu -->
-  <div class="radial-root" id="radialRoot">
-    <div class="spoke s1" data-layer="temp" id="spokeTemp"><div class="ic">🌡️</div><div class="lb">TEMP</div></div>
-    <div class="spoke s2" data-layer="precip" id="spokePrecip"><div class="ic">🌧️</div><div class="lb">RAIN</div></div>
-    <div class="spoke s3" data-layer="wind" id="spokeWind"><div class="ic">💨</div><div class="lb">WIND</div></div>
-    <div class="spoke s4" data-layer="clouds" id="spokeClouds"><div class="ic">☁️</div><div class="lb">CLOUDS</div></div>
-    <div class="spoke s5" data-layer="currents" id="spokeCurrents"><div class="ic">🌊</div><div class="lb">CURRENT</div></div>
-    <div class="spoke s6" data-layer="labels" id="spokeLabels"><div class="ic">🏷️</div><div class="lb">LABELS</div></div>
-    <div class="spoke s7" data-layer="reset" id="spokeReset"><div class="ic">⨯</div><div class="lb">CLEAR</div></div>
-    <div class="fab" id="fab">
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="#e8edf5" stroke-width="2" stroke-linecap="round"/></svg>
-    </div>
   </div>
 
   <!-- detail panel -->
