@@ -76,9 +76,12 @@ const earthMat = new THREE.ShaderMaterial({
     uniform sampler2D uDay, uNight, uWater;
     uniform vec3 uSunDir;
     uniform float uDayNight;
+    // raw ShaderMaterial doesn't auto-decode sRGB textures; do it here so the
+    // renderer's linear→sRGB output pass doesn't double-encode (which grays the marble)
+    vec3 s2l(vec3 c){ return pow(c, vec3(2.2)); }
     void main(){
-      vec3 dayCol = texture2D(uDay, vUv).rgb;
-      vec3 nightCol = texture2D(uNight, vUv).rgb;
+      vec3 dayCol = s2l(texture2D(uDay, vUv).rgb);
+      vec3 nightCol = s2l(texture2D(uNight, vUv).rgb);
       float water = texture2D(uWater, vUv).r;
 
       float d = dot(normalize(vWN), normalize(uSunDir));
@@ -129,14 +132,14 @@ const cloudMat = new THREE.ShaderMaterial({
     uniform float uDayNight, uShift;
     void main(){
       float a = texture2D(uClouds, vec2(vUv.x + uShift, vUv.y)).r;
-      // keep only well-defined cloud masses so the blue-marble surface shows through
-      a = smoothstep(0.35, 0.85, a);
+      // keep only the densest cloud cores so the blue-marble surface dominates
+      a = smoothstep(0.55, 0.92, a);
       if(a < 0.03) discard;
       float d = dot(normalize(vWN), normalize(uSunDir));
       float day = smoothstep(-0.12, 0.25, d);
       day = mix(1.0, day, uDayNight);
-      float bright = mix(0.35, 1.0, day);
-      gl_FragColor = vec4(vec3(bright), a * mix(0.22, 0.5, day));
+      float bright = mix(0.5, 1.0, day);
+      gl_FragColor = vec4(vec3(bright), a * mix(0.16, 0.42, day));
     }
   `,
 });
