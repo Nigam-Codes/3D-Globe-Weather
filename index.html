@@ -3,72 +3,176 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>3D Globe Weather</title>
+<title>Weather Globe Terminal</title>
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
 <div class="stage">
   <div id="globeViz"></div>
 
-  <div class="title">Weather Globe <span>drag to rotate · scroll to zoom · click anywhere for conditions</span></div>
-  <div class="legend" id="legendNote"></div>
+  <!-- ===================== TOP COMMAND BAR ===================== -->
+  <header class="topbar">
+    <div class="brand">◈ WEATHER&nbsp;GLOBE <span>TERMINAL</span></div>
 
-  <div class="search-wrap">
-    <input id="searchInput" type="text" placeholder="Search a city..." autocomplete="off">
-    <div id="searchResults" class="search-results"></div>
-  </div>
+    <div class="search-wrap">
+      <input id="searchInput" type="text" placeholder="Search city, airport, coordinates…" autocomplete="off">
+      <div id="searchResults" class="search-results"></div>
+    </div>
 
-  <div class="active-pill">
-    <div class="pill temp" id="pillTemp" data-layer="temp">Temp</div>
-    <div class="pill precip" id="pillPrecip" data-layer="precip">Precip</div>
-    <div class="pill wind" id="pillWind" data-layer="wind">Wind</div>
-    <div class="pill clouds" id="pillClouds" data-layer="clouds">Clouds</div>
-    <div class="pill currents" id="pillCurrents" data-layer="currents">Currents</div>
-    <div class="pill labels" id="pillLabels" data-layer="labels">Labels</div>
-    <div class="pill clear" id="pillClear" title="Clear all layers">Clear</div>
-  </div>
+    <div class="top-status">
+      <div class="clock"><b id="utcClock">--:--:--</b><span id="utcDate">UTC</span></div>
+      <button class="chip-alert" id="alertChip" title="Significant earthquakes, past 24h">
+        ⚠ <b id="alertCount">0</b> ALERTS
+      </button>
+      <div class="chip-live"><i></i> LIVE</div>
+    </div>
+  </header>
 
-  <div class="hint">Layers: <b id="hintText">none active</b></div>
+  <!-- ===================== LEFT: GLOBAL MONITOR ===================== -->
+  <aside class="leftrail">
+    <div class="rail-head">
+      <span>GLOBAL MONITOR</span>
+      <button id="dashboardToggle" title="Saved locations &amp; pins">★ SAVED</button>
+    </div>
 
-  <button class="dash-toggle" id="dashboardToggle">📋 Dashboard</button>
+    <button class="stat-tile" id="tileQuakes" data-layer="quakes">
+      <div class="st-top"><span class="st-name">SEISMIC · 24H</span><span class="st-dot"></span></div>
+      <div class="st-big"><b id="qkCount">—</b><small>M2.5+ events</small></div>
+      <div class="st-sub" id="qkMax">strongest —</div>
+      <canvas class="st-spark" id="qkSpark" width="220" height="28"></canvas>
+    </button>
 
-  <!-- map-style zoom controls -->
-  <div class="map-controls">
-    <button id="zoomIn" title="Zoom in">+</button>
-    <button id="zoomOut" title="Zoom out">−</button>
-    <button id="zoomHome" title="Reset view">⌂</button>
-  </div>
+    <button class="stat-tile" id="tileAurora" data-layer="aurora">
+      <div class="st-top"><span class="st-name">AURORA · PEAK PROB</span><span class="st-dot"></span></div>
+      <div class="st-big"><b id="auGW">—</b><small>% visible</small></div>
+      <div class="st-sub" id="auHemi">N — · S —</div>
+    </button>
 
-  <!-- detail panel -->
+    <button class="stat-tile" id="tileClouds" data-layer="clouds">
+      <div class="st-top"><span class="st-name">GLOBAL CLOUD COVER</span><span class="st-dot"></span></div>
+      <div class="st-big"><b id="clAvg">—</b><small>% mean</small></div>
+      <div class="st-bar"><i id="clBar"></i></div>
+    </button>
+
+    <button class="stat-tile" id="tileWind" data-layer="wind">
+      <div class="st-top"><span class="st-name">PEAK SURFACE WIND</span><span class="st-dot"></span></div>
+      <div class="st-big"><b id="wdPeak">—</b><small>km/h</small></div>
+      <div class="st-sub" id="wdWhere">—</div>
+    </button>
+
+    <div class="rail-foot" id="railFoot">
+      Data: Open-Meteo · NOAA SWPC · USGS · astronomy-engine
+    </div>
+  </aside>
+
+  <!-- ===================== RIGHT: LAYER CONTROL ===================== -->
+  <aside class="layers-panel">
+    <div class="lp-head">DATA FIELD <small>pick one</small></div>
+    <div class="chip-grid" id="fieldGrid">
+      <button class="lchip field temp"     data-layer="temp">🌡 Temperature</button>
+      <button class="lchip field precip"   data-layer="precip">🌧 Precipitation</button>
+      <button class="lchip field pressure" data-layer="pressure">📊 Pressure</button>
+      <button class="lchip field aqi"      data-layer="aqi">🫁 Air Quality</button>
+    </div>
+
+    <div class="lp-head">OVERLAYS <small>combine freely</small></div>
+    <div class="chip-grid" id="overlayGrid">
+      <button class="lchip ov wind"     data-layer="wind">💨 Wind flow</button>
+      <button class="lchip ov clouds"   data-layer="clouds">☁ Clouds</button>
+      <button class="lchip ov aurora"   data-layer="aurora">🌌 Aurora</button>
+      <button class="lchip ov quakes"   data-layer="quakes">⊕ Quakes</button>
+      <button class="lchip ov currents" data-layer="currents">🌊 Currents</button>
+      <button class="lchip ov peaks"    data-layer="peaks">⛅ Cloud peaks</button>
+      <button class="lchip ov labels"   data-layer="labels">🏷 Labels</button>
+    </div>
+
+    <button class="clear-btn" id="pillClear">✕ Clear all layers</button>
+    <div class="lp-active">Active: <b id="hintText">none</b></div>
+  </aside>
+
+  <!-- ===================== DETAIL PANEL ===================== -->
   <div class="detail" id="detail">
     <div class="close" id="detailClose">✕</div>
     <h3 id="dName">—</h3>
     <div class="sub" id="dSub">Local conditions</div>
-    <div class="big" id="dTemp">—</div>
-    <div class="row"><span>Condition</span><span id="dCond">—</span></div>
-    <div class="row"><span>Wind</span><span id="dWind">—</span></div>
-    <div class="row"><span>Humidity</span><span id="dHumidity">—</span></div>
-    <div class="row"><span>Precipitation</span><span id="dPrecip">—</span></div>
+
+    <div class="d-hero">
+      <div class="d-temp"><span class="big" id="dTemp">—</span><span class="d-feels" id="dFeels"></span></div>
+      <div class="d-cond" id="dCond">—</div>
+    </div>
+
+    <div class="d-metrics">
+      <div class="m"><span>Wind</span><b id="dWind">—</b></div>
+      <div class="m"><span>Humidity</span><b id="dHumidity">—</b></div>
+      <div class="m"><span>Pressure</span><b id="dPressure">—</b></div>
+      <div class="m"><span>Precip</span><b id="dPrecip">—</b></div>
+      <div class="m"><span>UV index</span><b id="dUV">—</b></div>
+      <div class="m"><span>Visibility</span><b id="dVis">—</b></div>
+      <div class="m"><span>Air quality</span><b id="dAQI">—</b></div>
+      <div class="m"><span>Moon</span><b id="dMoon">—</b></div>
+    </div>
+
+    <div class="d-astro">
+      <span>☀ ↑ <b id="dSunrise">—</b></span>
+      <span>☀ ↓ <b id="dSunset">—</b></span>
+    </div>
+
+    <div class="chart-block">
+      <div class="chart-label">TEMPERATURE · NEXT 48H <b id="chTempRange"></b></div>
+      <canvas id="chartTemp" width="256" height="64"></canvas>
+    </div>
+    <div class="chart-block">
+      <div class="chart-label">PRECIPITATION · NEXT 48H <b id="chPrecipRange"></b></div>
+      <canvas id="chartPrecip" width="256" height="56"></canvas>
+    </div>
+
     <div class="timeblock">
       <div class="trow"><span id="tWhen">Now</span><span id="tDelta" class="muted"></span></div>
       <input type="range" id="timeSlider" min="0" max="8" step="1" value="0">
       <div class="ticks"><span>Now</span><span>+12h</span><span>+24h</span><span>+36h</span><span>+48h</span></div>
     </div>
+
     <div class="detail-actions">
       <button id="pinAction">📌 Drop pin</button>
       <button id="dashAction">★ Save to dashboard</button>
     </div>
   </div>
 
-  <!-- dashboard panel -->
+  <!-- ===================== QUAKE DETAIL POPOVER ===================== -->
+  <div class="quake-pop" id="quakePop">
+    <div class="close" id="quakeClose">✕</div>
+    <div class="qp-mag" id="qpMag">—</div>
+    <div class="qp-place" id="qpPlace">—</div>
+    <div class="qp-meta" id="qpMeta">—</div>
+  </div>
+
+  <!-- ===================== DASHBOARD PANEL ===================== -->
   <div class="dashboard" id="dashboard">
     <div class="close" id="dashboardClose">✕</div>
-    <h3>Dashboard</h3>
-    <div class="sub">Saved cities &amp; pins · live conditions</div>
+    <h3>Saved &amp; Pinned</h3>
+    <div class="sub">Live conditions for your watchlist</div>
     <div id="dashboardList" class="dash-list">
       <div class="dash-empty">Nothing saved yet — select a place and tap "Save to dashboard".</div>
     </div>
   </div>
+
+  <!-- ===================== ZOOM CONTROLS ===================== -->
+  <div class="map-controls">
+    <button id="zoomIn" title="Zoom in">+</button>
+    <button id="zoomOut" title="Zoom out">−</button>
+    <button id="zoomHome" title="Reset view">⌂</button>
+  </div>
+
+  <!-- ===================== BOTTOM STATUS TICKER ===================== -->
+  <footer class="ticker">
+    <span class="tk"><i class="tk-dot ok"></i>FPS <b id="fpsVal">—</b></span>
+    <span class="tk">SOURCES <b id="srcCount">4</b> ACTIVE</span>
+    <span class="tk">API <b id="apiStatus" class="ok">OPERATIONAL</b></span>
+    <span class="tk">GRID <b id="gridCount">0</b> PTS</span>
+    <span class="tk">QUAKES <b id="tkQuakes">0</b></span>
+    <span class="tk">UPDATED <b id="lastUpdated">—</b></span>
+    <span class="tk tk-right">drag&nbsp;to&nbsp;rotate · scroll&nbsp;to&nbsp;zoom · click&nbsp;for&nbsp;conditions</span>
+  </footer>
 
   <div id="loadingBadge" class="loading-badge">Loading…</div>
 </div>

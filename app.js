@@ -1,10 +1,16 @@
-// 3D Globe Weather — app logic
-// Globe rendering: Globe.gl (Three.js wrapper). Weather data: Open-Meteo (no key required).
+// Weather Globe Terminal — app logic
+// Globe rendering: Globe.gl (Three.js wrapper). All data keyless + CORS-friendly:
+//   Open-Meteo (weather, air quality, geocoding) · NOAA SWPC (aurora) ·
+//   USGS (earthquakes) · astronomy-engine (sun/planets/moon, computed locally).
 import * as THREE from 'three';
+import * as Astronomy from 'astronomy-engine';
 import { CURRENT_PATHS, expandToSegments } from './currents.js';
 import { buildSolarSystem } from './solarSystem.js';
 import { COUNTRIES, CITIES, tierForAltitude } from './places.js';
 import { buildConstellations } from './constellations.js';
+import { fetchAurora } from './aurora.js';
+import { fetchQuakes } from './quakes.js';
+import { fetchAQGrid, fetchAQPoint, aqiBand } from './airquality.js';
 
 const WMO_CODES = {
   0: 'Clear sky', 1: 'Mainly clear', 2: 'Partly cloudy', 3: 'Overcast',
@@ -19,14 +25,11 @@ const WMO_CODES = {
   95: 'Thunderstorm', 96: 'Thunderstorm w/ hail', 99: 'Severe thunderstorm w/ hail',
 };
 
-// ---------- pins + dashboard (persisted locally so they survive reloads) ----------
+// ---------- persisted pins + dashboard ----------
 
 const PIN_KEY = 'weatherGlobePins';
 const DASH_KEY = 'weatherGlobeDashboard';
-
-function loadJSON(key) {
-  try { return JSON.parse(localStorage.getItem(key)) || []; } catch { return []; }
-}
+function loadJSON(key) { try { return JSON.parse(localStorage.getItem(key)) || []; } catch { return []; } }
 let pins = loadJSON(PIN_KEY);
 let dashboardItems = loadJSON(DASH_KEY);
 function savePins() { localStorage.setItem(PIN_KEY, JSON.stringify(pins)); }
@@ -36,25 +39,15 @@ function sameCoord(a, b) { return Math.abs(a.lat - b.lat) < 0.001 && Math.abs(a.
 // ---------- zoom-based level of detail ----------
 
 let currentTier = 1;
-function visibleCities() {
-  return CITIES.filter(c => c.tier <= currentTier);
-}
+function visibleCities() { return CITIES.filter(c => c.tier <= currentTier); }
 
-// ---------- small color helpers (no external deps) ----------
+// ---------- color + math helpers ----------
 
-function hexToRgb(hex) {
-  const v = parseInt(hex.slice(1), 16);
-  return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
-}
-function rgbToCss([r, g, b], a = 1) {
-  return `rgba(${r},${g},${b},${a})`;
-}
+function hexToRgb(hex) { const v = parseInt(hex.slice(1), 16); return [(v >> 16) & 255, (v >> 8) & 255, v & 255]; }
+function rgbToCss([r, g, b], a = 1) { return `rgba(${r},${g},${b},${a})`; }
 function lerp(a, b, t) { return a + (b - a) * t; }
-function lerpColor(c1, c2, t) {
-  return [lerp(c1[0], c2[0], t), lerp(c1[1], c2[1], t), lerp(c1[2], c2[2], t)];
-}
-function scaleFromStops(stops) {
-  // stops: [[0, '#rrggbb'], [0.5, '#rrggbb'], [1, '#rrggbb'], ...]
+function lerpColor(c1, c2, t) { return [lerp(c1[0], c2[0], t), lerp(c1[1], c2[1], t), lerp(c1[2], c2[2], t)]; }
+function scaleFromStops(stops, alpha = 0.75) {
   const parsed = stops.map(([t, hex]) => [t, hexToRgb(hex)]);
   return function (t) {
     t = Math.max(0, Math.min(1, t));
@@ -63,24 +56,27 @@ function scaleFromStops(stops) {
       const [t1, c1] = parsed[i + 1];
       if (t >= t0 && t <= t1) {
         const local = t1 === t0 ? 0 : (t - t0) / (t1 - t0);
-        return rgbToCss(lerpColor(c0, c1, local), 0.75);
+        return rgbToCss(lerpColor(c0, c1, local), alpha);
       }
     }
-    return rgbToCss(parsed[parsed.length - 1][1], 0.75);
+    return rgbToCss(parsed[parsed.length - 1][1], alpha);
   };
 }
-function normalize(value, min, max) {
-  return Math.max(0, Math.min(1, (value - min) / (max - min)));
-}
+function normalize(value, min, max) { return Math.max(0, Math.min(1, (value - min) / (max - min))); }
 
-const TEMP_SCALE = scaleFromStops([
-  [0, '#1a3a8f'], [0.35, '#2fa3ff'], [0.55, '#ffd966'], [0.75, '#ff8a4c'], [1, '#ff3b3b'],
-]);
-const PRECIP_SCALE = scaleFromStops([
-  [0, '#0a1a33'], [0.3, '#1c4f8f'], [0.6, '#2f8fd8'], [1, '#7bd8ff'],
-]);
-const TEMP_DOMAIN = [-30, 45];
-const PRECIP_DOMAIN = [0, 12];
+const TEMP_SCALE = scaleFromStops([[0, '#1a3a8f'], [0.35, '#2fa3ff'], [0.55, '#ffd966'], [0.75, '#ff8a4c'], [1, '#ff3b3b']]);
+const PRECIP_SCALE = scaleFromStops([[0, '#0a1a33'], [0.3, '#1c4f8f'], [0.6, '#2f8fd8'], [1, '#7bd8ff']]);
+const PRESSURE_SCALE = scaleFromStops([[0, '#b042ff'], [0.45, '#4ca3ff'], [0.5, '#16223c'], [0.55, '#ffd966'], [1, '#ff8a4c']]);
+const AQI_SCALE = scaleFromStops([[0, '#2ecc71'], [0.25, '#f1c40f'], [0.5, '#e67e22'], [0.75, '#e74c3c'], [1, '#9b59b6']], 0.78);
+const QUAKE_COLOR = scaleFromStops([[0, '#ffd34d'], [0.5, '#ff8a3c'], [1, '#ff3b3b']], 1);
+
+// field → { scale, domain, weightKey } config for the single scalar heatmap
+const FIELD_CONFIG = {
+  temp:     { scale: TEMP_SCALE,     domain: [-30, 45],   key: 'temp' },
+  precip:   { scale: PRECIP_SCALE,   domain: [0, 12],     key: 'precip' },
+  pressure: { scale: PRESSURE_SCALE, domain: [980, 1040], key: 'pressure' },
+  aqi:      { scale: AQI_SCALE,      domain: [0, 200],    key: 'aqi' },
+};
 const WIND_DOMAIN = [0, 60];
 
 // ---------- weather grid cache ----------
@@ -91,46 +87,64 @@ const GRID_TTL_MS = 10 * 60 * 1000;
 function buildGrid() {
   const points = [];
   for (let lat = -75; lat <= 75; lat += 15) {
-    for (let lng = -180; lng < 180; lng += 15) {
-      points.push({ lat, lng });
-    }
+    for (let lng = -180; lng < 180; lng += 15) points.push({ lat, lng });
   }
   return points;
 }
 
+let gridInflight = null;
 async function fetchGridWeather() {
   const now = Date.now();
-  if (gridCache.points && now - gridCache.fetchedAt < GRID_TTL_MS) {
-    return gridCache.points;
-  }
-  const grid = buildGrid();
-  const chunkSize = 90;
-  const chunks = [];
-  for (let i = 0; i < grid.length; i += chunkSize) chunks.push(grid.slice(i, i + chunkSize));
+  if (gridCache.points && now - gridCache.fetchedAt < GRID_TTL_MS) return gridCache.points;
+  // share one in-flight request between concurrent callers (e.g. a hash-activated
+  // field layer + the monitor tiles both warming up on load) so we never fire the
+  // chunked grid fetch twice and trip a transient rate limit
+  if (gridInflight) return gridInflight;
 
-  const results = await Promise.all(chunks.map(async (chunk) => {
-    const lats = chunk.map(p => p.lat).join(',');
-    const lngs = chunk.map(p => p.lng).join(',');
-    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lats}&longitude=${lngs}` +
-      `&current=temperature_2m,precipitation,wind_speed_10m,wind_direction_10m,cloud_cover`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error('Grid fetch failed');
-    const data = await res.json();
-    const list = Array.isArray(data) ? data : [data];
-    return list.map((d, i) => ({
-      lat: chunk[i].lat,
-      lng: chunk[i].lng,
-      temp: d.current?.temperature_2m,
-      precip: d.current?.precipitation ?? 0,
-      windSpeed: d.current?.wind_speed_10m ?? 0,
-      windDir: d.current?.wind_direction_10m ?? 0,
-      cloudCover: d.current?.cloud_cover ?? 0,
+  gridInflight = (async () => {
+    const grid = buildGrid();
+    const chunkSize = 90;
+    const chunks = [];
+    for (let i = 0; i < grid.length; i += chunkSize) chunks.push(grid.slice(i, i + chunkSize));
+
+    const results = await Promise.all(chunks.map(async (chunk) => {
+      const lats = chunk.map(p => p.lat).join(',');
+      const lngs = chunk.map(p => p.lng).join(',');
+      const url = `https://api.open-meteo.com/v1/forecast?latitude=${lats}&longitude=${lngs}` +
+        `&current=temperature_2m,precipitation,wind_speed_10m,wind_direction_10m,cloud_cover,surface_pressure`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error('Grid fetch failed');
+      const data = await res.json();
+      const list = Array.isArray(data) ? data : [data];
+      return list.map((d, i) => ({
+        lat: chunk[i].lat, lng: chunk[i].lng,
+        temp: d.current?.temperature_2m,
+        precip: d.current?.precipitation ?? 0,
+        windSpeed: d.current?.wind_speed_10m ?? 0,
+        windDir: d.current?.wind_direction_10m ?? 0,
+        cloudCover: d.current?.cloud_cover ?? 0,
+        pressure: d.current?.surface_pressure ?? 1013,
+      }));
     }));
-  }));
 
-  const points = results.flat().filter(p => typeof p.temp === 'number');
-  gridCache.points = points;
-  gridCache.fetchedAt = now;
+    const points = results.flat().filter(p => typeof p.temp === 'number');
+    gridCache.points = points;
+    gridCache.fetchedAt = Date.now();
+    markUpdated();
+    setTicker('gridCount', points.length);
+    return points;
+  })();
+
+  try { return await gridInflight; }
+  finally { gridInflight = null; }
+}
+
+let aqGridCache = { points: null, fetchedAt: 0 };
+async function fetchAQGridCached() {
+  const now = Date.now();
+  if (aqGridCache.points && now - aqGridCache.fetchedAt < GRID_TTL_MS) return aqGridCache.points;
+  const points = await fetchAQGrid(buildGrid());
+  aqGridCache = { points, fetchedAt: now };
   return points;
 }
 
@@ -140,14 +154,9 @@ function haversineKm(lat1, lng1, lat2, lng2) {
   const R = 6371;
   const dLat = (lat2 - lat1) * Math.PI / 180;
   const dLng = (lng2 - lng1) * Math.PI / 180;
-  const a = Math.sin(dLat / 2) ** 2 +
-    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
-
-// greedy label decluttering: keep items in priority order, dropping any item that
-// falls within minKm of an already-kept item — stops nearby labels (e.g. New York +
-// Philadelphia at city zoom) from stacking on top of each other
 function declutter(items, minKm) {
   const kept = [];
   for (const item of items) {
@@ -155,18 +164,80 @@ function declutter(items, minKm) {
   }
   return kept;
 }
-
 function destinationPoint(lat, lng, bearingDeg, distanceKm) {
   const R = 6371;
   const δ = distanceKm / R;
   const θ = bearingDeg * Math.PI / 180;
   const φ1 = lat * Math.PI / 180, λ1 = lng * Math.PI / 180;
   const φ2 = Math.asin(Math.sin(φ1) * Math.cos(δ) + Math.cos(φ1) * Math.sin(δ) * Math.cos(θ));
-  const λ2 = λ1 + Math.atan2(
-    Math.sin(θ) * Math.sin(δ) * Math.cos(φ1),
-    Math.cos(δ) - Math.sin(φ1) * Math.sin(φ2)
-  );
+  const λ2 = λ1 + Math.atan2(Math.sin(θ) * Math.sin(δ) * Math.cos(φ1), Math.cos(δ) - Math.sin(φ1) * Math.sin(φ2));
   return { lat: φ2 * 180 / Math.PI, lng: ((λ2 * 180 / Math.PI) + 540) % 360 - 180 };
+}
+function nearestCityName(lat, lng) {
+  let best = null, bestD = Infinity;
+  for (const c of CITIES) {
+    if (c.tier > 2) continue;
+    const d = haversineKm(lat, lng, c.lat, c.lng);
+    if (d < bestD) { bestD = d; best = c; }
+  }
+  return best && bestD < 1200 ? best.name : fmtCoord(lat, lng);
+}
+function fmtCoord(lat, lng) {
+  return `${Math.abs(lat).toFixed(1)}°${lat >= 0 ? 'N' : 'S'}, ${Math.abs(lng).toFixed(1)}°${lng >= 0 ? 'E' : 'W'}`;
+}
+
+// ---------- moon phase (astronomy-engine, computed locally) ----------
+
+function moonPhase(date = new Date()) {
+  try {
+    const angle = Astronomy.MoonPhase(date); // 0=new, 90=1st quarter, 180=full, 270=last quarter
+    const names = ['New', 'Waxing crescent', 'First quarter', 'Waxing gibbous', 'Full', 'Waning gibbous', 'Last quarter', 'Waning crescent'];
+    const emoji = ['🌑', '🌒', '🌓', '🌔', '🌕', '🌖', '🌗', '🌘'];
+    const idx = Math.round(angle / 45) % 8;
+    return `${emoji[idx]} ${names[idx]}`;
+  } catch { return '—'; }
+}
+
+// ---------- tiny canvas charts ----------
+
+function drawLineChart(canvas, values, colorHex) {
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width, h = canvas.height, pad = 4;
+  ctx.clearRect(0, 0, w, h);
+  const vals = values.filter(v => typeof v === 'number');
+  if (vals.length < 2) return;
+  const min = Math.min(...vals), max = Math.max(...vals), span = max - min || 1;
+  const x = i => pad + (i / (values.length - 1)) * (w - pad * 2);
+  const y = v => h - pad - ((v - min) / span) * (h - pad * 2);
+  // area fill
+  ctx.beginPath();
+  values.forEach((v, i) => { if (typeof v === 'number') ctx[i === 0 ? 'moveTo' : 'lineTo'](x(i), y(v)); });
+  ctx.lineTo(x(values.length - 1), h); ctx.lineTo(x(0), h); ctx.closePath();
+  const [r, g, b] = hexToRgb(colorHex);
+  const grad = ctx.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, `rgba(${r},${g},${b},0.32)`); grad.addColorStop(1, `rgba(${r},${g},${b},0)`);
+  ctx.fillStyle = grad; ctx.fill();
+  // line
+  ctx.beginPath();
+  values.forEach((v, i) => { if (typeof v === 'number') ctx[i === 0 ? 'moveTo' : 'lineTo'](x(i), y(v)); });
+  ctx.strokeStyle = colorHex; ctx.lineWidth = 1.6; ctx.lineJoin = 'round'; ctx.stroke();
+}
+
+function drawBarChart(canvas, values, colorHex) {
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width, h = canvas.height, pad = 3;
+  ctx.clearRect(0, 0, w, h);
+  const vals = values.filter(v => typeof v === 'number');
+  if (!vals.length) return;
+  const max = Math.max(...vals, 0.1);
+  const bw = (w - pad * 2) / values.length;
+  const [r, g, b] = hexToRgb(colorHex);
+  values.forEach((v, i) => {
+    if (typeof v !== 'number') return;
+    const bh = (v / max) * (h - pad * 2);
+    ctx.fillStyle = v > 0 ? `rgba(${r},${g},${b},0.85)` : 'rgba(255,255,255,0.06)';
+    ctx.fillRect(pad + i * bw + 0.5, h - pad - bh, Math.max(1, bw - 1), Math.max(v > 0 ? 1.5 : 0.5, bh));
+  });
 }
 
 // ---------- globe setup ----------
@@ -175,9 +246,7 @@ const world = Globe()
   .globeImageUrl('https://unpkg.com/three-globe/example/img/earth-night.jpg')
   .bumpImageUrl('https://unpkg.com/three-globe/example/img/earth-topology.png')
   .backgroundImageUrl('https://unpkg.com/three-globe/example/img/night-sky.png')
-  .showAtmosphere(true)
-  .atmosphereColor('#5fd0ff')
-  .atmosphereAltitude(0.18)
+  .showAtmosphere(true).atmosphereColor('#5fd0ff').atmosphereAltitude(0.18)
   .onGlobeClick(({ lat, lng }) => selectLocation(lat, lng, null))
   (document.getElementById('globeViz'));
 
@@ -189,19 +258,13 @@ world.controls().autoRotateSpeed = 0.4;
 world.controls().enableDamping = true;
 world.pointOfView({ lat: 15, lng: 10, altitude: 2.4 }, 0);
 
-// the basemap is a fixed-resolution raster texture (no tile pyramid like Google/Apple Maps),
-// so zooming in past its native resolution just turns it to mush — clamp the closest the
-// camera can scroll-zoom to, which keeps the surface looking sharp at all times
 const MIN_ALTITUDE = 0.28;
 world.controls().minDistance = world.getGlobeRadius() * (1 + MIN_ALTITUDE);
 
-// sharpen the basemap: enable anisotropic filtering + mipmapping once the texture has
-// loaded, so the surface stays crisp at the oblique grazing angles you get near the horizon
 (function sharpenGlobeTexture() {
   const mat = world.globeMaterial();
   if (mat && mat.map) {
-    const maxAniso = world.renderer().capabilities.getMaxAnisotropy();
-    mat.map.anisotropy = maxAniso;
+    mat.map.anisotropy = world.renderer().capabilities.getMaxAnisotropy();
     mat.map.minFilter = THREE.LinearMipmapLinearFilter;
     mat.map.needsUpdate = true;
     return;
@@ -216,60 +279,42 @@ let userInteracted = false;
   });
 });
 
-// gentle "breathing" atmosphere glow — purely cosmetic, keeps the globe feeling alive even when idle
 (function breatheAtmosphere() {
   const t = performance.now() / 1000;
   world.atmosphereAltitude(0.18 + Math.sin(t * 0.5) * 0.02);
   requestAnimationFrame(breatheAtmosphere);
 })();
 
-// zoom-driven level of detail: re-render cities/labels only when the altitude crosses a tier boundary
 function updateTierFromAltitude() {
-  const alt = world.pointOfView().altitude;
-  const tier = tierForAltitude(alt);
-  if (tier !== currentTier) {
-    currentTier = tier;
-    renderPoints();
-    refreshLabels();
-  }
+  const tier = tierForAltitude(world.pointOfView().altitude);
+  if (tier !== currentTier) { currentTier = tier; renderPoints(); refreshLabels(); }
 }
 world.controls().addEventListener('change', updateTierFromAltitude);
-setInterval(updateTierFromAltitude, 800); // fallback for programmatic fly-tos that skip 'change' ticks
+setInterval(updateTierFromAltitude, 800);
 
-// ---------- background solar system (Sun + planets, real positions today) + constellations ----------
+// ---------- background solar system + constellations ----------
 
 buildSolarSystem(world.scene());
 buildConstellations(world.scene());
-const legendNote = document.getElementById('legendNote');
-if (legendNote) {
-  legendNote.textContent = 'Sun & planets: real positions for today, via astronomy-engine · Ocean currents: documented current systems (not live telemetry) · Clouds: stylized, driven by live cloud-cover data · Country/city labels & constellations: curated reference sets, illustrative placement';
-}
 
-// ---------- stylized cloud layer (real cloud-cover %, drawn as a drifting canvas texture) ----------
+// ---------- stylized cloud layer (real cloud-cover %) ----------
 
 const CLOUD_CANVAS_SIZE = 1024;
 const cloudCanvas = document.createElement('canvas');
-cloudCanvas.width = CLOUD_CANVAS_SIZE;
-cloudCanvas.height = CLOUD_CANVAS_SIZE / 2;
+cloudCanvas.width = CLOUD_CANVAS_SIZE; cloudCanvas.height = CLOUD_CANVAS_SIZE / 2;
 const cloudCtx = cloudCanvas.getContext('2d');
 const cloudTexture = new THREE.CanvasTexture(cloudCanvas);
 cloudTexture.wrapS = THREE.RepeatWrapping;
-
-const cloudGeo = new THREE.SphereGeometry(world.getGlobeRadius() * 1.012, 75, 75);
-const cloudMat = new THREE.MeshBasicMaterial({
-  map: cloudTexture, transparent: true, opacity: 0.85, depthWrite: false,
-});
-const cloudMesh = new THREE.Mesh(cloudGeo, cloudMat);
+const cloudMesh = new THREE.Mesh(
+  new THREE.SphereGeometry(world.getGlobeRadius() * 1.012, 75, 75),
+  new THREE.MeshBasicMaterial({ map: cloudTexture, transparent: true, opacity: 0.85, depthWrite: false })
+);
 cloudMesh.visible = false;
 world.scene().add(cloudMesh);
 
 function drawClouds(points, t = 0) {
   const ctx = cloudCtx;
-  // always fully clear first — redrawing from scratch every time keeps the layer crisp
-  // instead of smearing/accumulating into a messy haze
   ctx.clearRect(0, 0, cloudCanvas.width, cloudCanvas.height);
-  // soft blobs, sized/opacity-scaled by real cloud-cover % per grid point, with a gentle
-  // animated jitter + breathing so the layer feels alive without drifting off true geography
   points.forEach(p => {
     const cover = p.cloudCover ?? 0;
     if (cover < 8) return;
@@ -281,103 +326,164 @@ function drawClouds(points, t = 0) {
     const r = (18 + (cover / 100) * 46) * breathe;
     const alpha = Math.min(0.75, 0.12 + (cover / 100) * 0.55) * breathe;
     const grad = ctx.createRadialGradient(x, y, 0, x, y, r);
-    grad.addColorStop(0, `rgba(255,255,255,${alpha})`);
-    grad.addColorStop(1, 'rgba(255,255,255,0)');
-    ctx.fillStyle = grad;
-    ctx.beginPath();
-    ctx.arc(x, y, r, 0, Math.PI * 2);
-    ctx.fill();
-    // wrap horizontally so blobs near the seam look continuous
-    if (x < r) {
-      ctx.save(); ctx.translate(cloudCanvas.width, 0);
-      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill(); ctx.restore();
-    } else if (x > cloudCanvas.width - r) {
-      ctx.save(); ctx.translate(-cloudCanvas.width, 0);
-      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill(); ctx.restore();
-    }
+    grad.addColorStop(0, `rgba(255,255,255,${alpha})`); grad.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = grad; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+    if (x < r) { ctx.save(); ctx.translate(cloudCanvas.width, 0); ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill(); ctx.restore(); }
+    else if (x > cloudCanvas.width - r) { ctx.save(); ctx.translate(-cloudCanvas.width, 0); ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill(); ctx.restore(); }
   });
   cloudTexture.needsUpdate = true;
 }
 
-// animated clouds: redraw frequently (clearing fully each time, see above) so the layer stays
-// visually alive but never smears or drifts away from its real lat/lng — fixes the old
-// independent-mesh-rotation drift, which slid the cloud texture out of sync with geography
-let cloudAnimT = 0;
-let lastCloudDraw = 0;
+let cloudAnimT = 0, lastCloudDraw = 0;
 function animateClouds(now) {
   if (cloudMesh.visible && gridCache.points && now - lastCloudDraw > 80) {
-    lastCloudDraw = now;
-    cloudAnimT += 0.08;
-    drawClouds(gridCache.points, cloudAnimT);
+    lastCloudDraw = now; cloudAnimT += 0.08; drawClouds(gridCache.points, cloudAnimT);
   }
   requestAnimationFrame(animateClouds);
 }
 requestAnimationFrame(animateClouds);
 
-// ---------- real ocean current arcs (static dataset, see currents.js) ----------
+// ---------- aurora layer (NOAA OVATION, glowing polar ovals) ----------
+
+const AUR_W = 1024, AUR_H = 512;
+const auroraCanvas = document.createElement('canvas');
+auroraCanvas.width = AUR_W; auroraCanvas.height = AUR_H;
+const auroraCtx = auroraCanvas.getContext('2d');
+const auroraTexture = new THREE.CanvasTexture(auroraCanvas);
+auroraTexture.wrapS = THREE.RepeatWrapping;
+const auroraMesh = new THREE.Mesh(
+  new THREE.SphereGeometry(world.getGlobeRadius() * 1.022, 80, 80),
+  new THREE.MeshBasicMaterial({ map: auroraTexture, transparent: true, opacity: 0.9, depthWrite: false, blending: THREE.AdditiveBlending })
+);
+auroraMesh.visible = false;
+world.scene().add(auroraMesh);
+let auroraData = null;
+
+function drawAurora(t = 0) {
+  const ctx = auroraCtx;
+  ctx.clearRect(0, 0, AUR_W, AUR_H);
+  if (!auroraData) return;
+  auroraData.points.forEach(p => {
+    const shimmer = 0.78 + Math.sin(t * 1.6 + p.lng * 0.15 + p.lat * 0.2) * 0.22;
+    const x = ((p.lng + 180) / 360) * AUR_W;
+    const y = ((90 - p.lat) / 180) * AUR_H;
+    const intensity = p.prob / 100;
+    const r = (5 + intensity * 22) * shimmer;
+    const a = Math.min(0.9, 0.1 + intensity * 0.85) * shimmer;
+    // green core → teal → magenta tail for stronger activity (real aurora color progression)
+    const col = intensity > 0.6 ? [180, 120, 255] : intensity > 0.3 ? [80, 247, 200] : [70, 230, 150];
+    const grad = ctx.createRadialGradient(x, y, 0, x, y, r);
+    grad.addColorStop(0, `rgba(${col[0]},${col[1]},${col[2]},${a})`);
+    grad.addColorStop(1, `rgba(${col[0]},${col[1]},${col[2]},0)`);
+    ctx.fillStyle = grad; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+  });
+  auroraTexture.needsUpdate = true;
+}
+
+let auroraAnimT = 0, lastAuroraDraw = 0;
+function animateAurora(now) {
+  if (auroraMesh.visible && auroraData && now - lastAuroraDraw > 90) {
+    lastAuroraDraw = now; auroraAnimT += 0.08; drawAurora(auroraAnimT);
+  }
+  requestAnimationFrame(animateAurora);
+}
+requestAnimationFrame(animateAurora);
+
+// ---------- ocean current arcs ----------
 
 const CURRENT_ARCS = expandToSegments(CURRENT_PATHS);
 
-// city + pin + selection markers (rendered as WebGL points, not DOM elements)
-let activePoint = null; // { lat, lng, name } for the currently selected location
-let activePinId = null; // set when the selected point is an existing saved pin
+// ---------- layer state ----------
+
+const FIELDS = ['temp', 'precip', 'pressure', 'aqi'];
+const OVERLAYS = ['wind', 'clouds', 'aurora', 'quakes', 'currents', 'peaks', 'labels'];
+const layerState = {};
+[...FIELDS, ...OVERLAYS].forEach(k => layerState[k] = false);
+
+let quakeData = [];
+let cloudPeaks = [];
+
+// ---------- points (cities + pins + quakes + cloud peaks + selection) ----------
+
+let activePoint = null;
+let activePinId = null;
+
+function computeCloudPeaks() {
+  if (!gridCache.points) return [];
+  return [...gridCache.points]
+    .filter(p => p.cloudCover >= 75)
+    .sort((a, b) => b.cloudCover - a.cloudCover)
+    .slice(0, 24)
+    .map(p => ({ lat: p.lat, lng: p.lng, cloudCover: Math.round(p.cloudCover), type: 'peak' }));
+}
 
 function renderPoints() {
-  const points = [...visibleCities()];
-  pins.forEach(p => points.push({ ...p, isPin: true }));
-  if (activePoint) points.push({ ...activePoint, selected: true });
+  const points = [];
+  visibleCities().forEach(c => points.push({ ...c, type: 'city' }));
+  pins.forEach(p => points.push({ ...p, type: 'pin' }));
+  if (layerState.peaks) cloudPeaks.forEach(p => points.push(p));
+  if (layerState.quakes) quakeData.forEach(q => points.push({ ...q, type: 'quake' }));
+  if (activePoint) points.push({ ...activePoint, type: 'active' });
+
   world
     .pointsData(points)
-    .pointLat('lat')
-    .pointLng('lng')
-    .pointAltitude(0.005)
-    .pointRadius(d => d.selected ? 0.5 : d.isPin ? 0.45 : 0.3)
-    .pointColor(d => d.selected ? '#ffffff' : d.isPin ? '#ff5ca8' : '#5fd0ff')
-    .pointLabel(d => d.name || '')
+    .pointLat('lat').pointLng('lng')
+    .pointAltitude(d => d.type === 'quake' ? 0.012 : 0.005)
+    .pointRadius(d => {
+      if (d.type === 'active') return 0.5;
+      if (d.type === 'pin') return 0.45;
+      if (d.type === 'quake') return 0.2 + normalize(d.mag, 2.5, 7.5) * 0.7;
+      if (d.type === 'peak') return 0.4;
+      return 0.3;
+    })
+    .pointColor(d => {
+      if (d.type === 'active') return '#ffffff';
+      if (d.type === 'pin') return '#ff5ca8';
+      if (d.type === 'quake') return QUAKE_COLOR(normalize(d.mag, 2.5, 7));
+      if (d.type === 'peak') return 'rgba(220,233,247,0.9)';
+      return '#5fd0ff';
+    })
+    .pointLabel(d => {
+      if (d.type === 'quake') return `M${d.mag.toFixed(1)} · ${d.place}`;
+      if (d.type === 'peak') return `☁ ${d.cloudCover}% cloud`;
+      return d.name || '';
+    })
     .pointsMerge(false)
-    .onPointClick(d => selectLocation(d.lat, d.lng, d.name || null, d.isPin ? d.id : null));
+    .onPointClick(d => {
+      if (d.type === 'quake') { showQuake(d); return; }
+      selectLocation(d.lat, d.lng, d.name || null, d.type === 'pin' ? d.id : null);
+    });
   renderRings();
 }
 
-// animated pulsing "ping" rings under the selected location + every saved pin (mockup-style emphasis)
 function renderRings() {
   const ringTargets = [];
   if (activePoint) ringTargets.push({ lat: activePoint.lat, lng: activePoint.lng, color: 'rgba(255,255,255,0.7)' });
   pins.forEach(p => ringTargets.push({ lat: p.lat, lng: p.lng, color: 'rgba(255,92,168,0.65)' }));
+  // pulse the strongest few quakes for emphasis when the layer is on
+  if (layerState.quakes) {
+    quakeData.filter(q => q.mag >= 4.5).slice(0, 8).forEach(q =>
+      ringTargets.push({ lat: q.lat, lng: q.lng, color: 'rgba(255,122,69,0.6)' }));
+  }
   world
     .ringsData(ringTargets)
-    .ringLat('lat')
-    .ringLng('lng')
-    .ringColor(d => d.color)
-    .ringMaxRadius(2.4)
-    .ringPropagationSpeed(2.2)
-    .ringRepeatPeriod(1500);
+    .ringLat('lat').ringLng('lng').ringColor(d => d.color)
+    .ringMaxRadius(2.4).ringPropagationSpeed(2.2).ringRepeatPeriod(1500);
 }
 
-// country + city text labels — countries always show when the layer is on; city text only
-// appears once zoomed in past world view, so detail "loads in" as the user zooms (city dots
-// themselves are always tier-filtered in renderPoints, independent of this label toggle)
 function refreshLabels() {
   if (!layerState.labels) { world.labelsData([]); return; }
-  // min separation shrinks as the user zooms in further, so closely-packed cities
-  // declutter at world view but can all show once there's screen room for them
   const CITY_MIN_SEP_KM = { 1: 900, 2: 220, 3: 55 };
   const rawCityLabels = currentTier >= 2 ? visibleCities().map(c => ({ ...c, kind: 'city' })) : [];
-  // cities are already ordered by rough size/importance (lower tier = bigger), so that
-  // order doubles as priority for which label wins when two are too close together
   const cityLabels = declutter(rawCityLabels, CITY_MIN_SEP_KM[currentTier] ?? 220);
   const countryLabels = declutter(COUNTRIES.map(c => ({ ...c, kind: 'country' })), 140);
   world
     .labelsData([...countryLabels, ...cityLabels])
-    .labelLat('lat')
-    .labelLng('lng')
-    .labelText('name')
+    .labelLat('lat').labelLng('lng').labelText('name')
     .labelSize(d => d.kind === 'country' ? 1.15 : 0.55)
     .labelColor(d => d.kind === 'country' ? 'rgba(255,207,92,0.85)' : 'rgba(232,237,245,0.85)')
     .labelDotRadius(d => d.kind === 'country' ? 0 : 0.25)
-    .labelAltitude(0.006)
-    .labelResolution(3)
-    .labelIncludeDot(d => d.kind !== 'country');
+    .labelAltitude(0.006).labelResolution(3).labelIncludeDot(d => d.kind !== 'country');
 }
 renderPoints();
 
@@ -385,21 +491,10 @@ renderPoints();
 
 const detail = document.getElementById('detail');
 const loadingBadge = document.getElementById('loadingBadge');
-
-function setLoading(on) {
-  loadingBadge.classList.toggle('show', on);
-}
-
-function fmtCoord(lat, lng) {
-  const latDir = lat >= 0 ? 'N' : 'S';
-  const lngDir = lng >= 0 ? 'E' : 'W';
-  return `${Math.abs(lat).toFixed(1)}°${latDir}, ${Math.abs(lng).toFixed(1)}°${lngDir}`;
-}
+function setLoading(on) { loadingBadge.classList.toggle('show', on); }
 
 async function selectLocation(lat, lng, name, pinId = null) {
-  // fly to the point
   world.pointOfView({ lat, lng, altitude: 1.6 }, 1200);
-
   activePoint = { lat, lng, name };
   activePinId = pinId;
   renderPoints();
@@ -407,59 +502,97 @@ async function selectLocation(lat, lng, name, pinId = null) {
 
   document.getElementById('dName').textContent = name || fmtCoord(lat, lng);
   document.getElementById('dSub').textContent = 'Local conditions · loading…';
+  document.getElementById('dMoon').textContent = moonPhase();
   detail.classList.add('open');
+  document.getElementById('quakePop').classList.remove('open');
   setLoading(true);
 
   try {
     const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}` +
-      `&current=temperature_2m,relative_humidity_2m,precipitation,weather_code,wind_speed_10m,wind_direction_10m` +
-      `&hourly=temperature_2m,precipitation,weather_code,wind_speed_10m,relative_humidity_2m` +
-      `&forecast_days=3&timezone=auto`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error('Weather fetch failed');
-    const data = await res.json();
-    renderDetail(name, lat, lng, data);
+      `&current=temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,weather_code,` +
+      `wind_speed_10m,wind_direction_10m,surface_pressure,visibility,uv_index` +
+      `&hourly=temperature_2m,precipitation,weather_code,wind_speed_10m,relative_humidity_2m,surface_pressure,visibility,uv_index` +
+      `&daily=sunrise,sunset&forecast_days=3&timezone=auto`;
+    const [wRes, aq] = await Promise.all([fetch(url), fetchAQPoint(lat, lng)]);
+    if (!wRes.ok) throw new Error('Weather fetch failed');
+    const data = await wRes.json();
+    renderDetail(name, lat, lng, data, aq);
+    setApi(true);
   } catch (err) {
     document.getElementById('dSub').textContent = 'Could not load weather data';
+    setApi(false);
   } finally {
     setLoading(false);
   }
 }
 
-// holds the currently selected location's forecast, so the slider can scrub without re-fetching
 let activeForecast = null;
 
-function renderDetail(name, lat, lng, data) {
+function renderDetail(name, lat, lng, data, aq) {
   const c = data.current || {};
   document.getElementById('dName').textContent = name || fmtCoord(lat, lng);
   document.getElementById('dSub').textContent = 'Local conditions · updated just now';
 
   const hourly = data.hourly;
   const nowIdx = hourly && Array.isArray(hourly.time) ? Math.max(0, hourly.time.indexOf(c.time)) : 0;
-  activeForecast = { current: c, hourly, nowIdx, name, lat, lng };
+  activeForecast = { current: c, hourly, nowIdx };
 
-  const timeSlider = document.getElementById('timeSlider');
-  timeSlider.value = 0;
+  // feels-like, astro, AQI, moon — "now" values that don't scrub with the slider
+  document.getElementById('dFeels').textContent =
+    typeof c.apparent_temperature === 'number' ? `feels ${Math.round(c.apparent_temperature)}°` : '';
+  const daily = data.daily;
+  document.getElementById('dSunrise').textContent = daily?.sunrise?.[0]?.slice(11, 16) ?? '—';
+  document.getElementById('dSunset').textContent = daily?.sunset?.[0]?.slice(11, 16) ?? '—';
+  if (aq && typeof aq.us_aqi === 'number') {
+    const band = aqiBand(aq.us_aqi);
+    const el = document.getElementById('dAQI');
+    el.textContent = `${aq.us_aqi} ${band.name}`;
+    el.style.color = band.color;
+  } else {
+    document.getElementById('dAQI').textContent = '—';
+  }
+
+  // 48h sparkline charts
+  if (hourly) {
+    const slice = (arr) => (arr || []).slice(nowIdx, nowIdx + 48);
+    const temps = slice(hourly.temperature_2m);
+    const precs = slice(hourly.precipitation);
+    drawLineChart(document.getElementById('chartTemp'), temps, '#ff8a4c');
+    drawBarChart(document.getElementById('chartPrecip'), precs, '#4ca3ff');
+    const tv = temps.filter(v => typeof v === 'number');
+    if (tv.length) document.getElementById('chTempRange').textContent = `${Math.round(Math.min(...tv))}° – ${Math.round(Math.max(...tv))}°`;
+    const pv = precs.filter(v => typeof v === 'number');
+    if (pv.length) document.getElementById('chPrecipRange').textContent = `Σ ${pv.reduce((a, b) => a + b, 0).toFixed(1)} mm`;
+  }
+
+  document.getElementById('timeSlider').value = 0;
   renderForecastAt(0);
 }
 
 function renderForecastAt(stepIdx) {
   if (!activeForecast) return;
   const { current: c, hourly, nowIdx } = activeForecast;
-  const hOffset = stepIdx * 6; // each slider step = 6h
+  const hOffset = stepIdx * 6;
   const idx = nowIdx + hOffset;
+  const at = (key, cur) => stepIdx === 0 ? cur : hourly?.[key]?.[idx];
 
-  const temp = stepIdx === 0 ? c.temperature_2m : hourly?.temperature_2m?.[idx];
-  const wind = stepIdx === 0 ? c.wind_speed_10m : hourly?.wind_speed_10m?.[idx];
-  const humidity = stepIdx === 0 ? c.relative_humidity_2m : hourly?.relative_humidity_2m?.[idx];
-  const precip = stepIdx === 0 ? c.precipitation : hourly?.precipitation?.[idx];
-  const code = stepIdx === 0 ? c.weather_code : hourly?.weather_code?.[idx];
+  const temp = at('temperature_2m', c.temperature_2m);
+  const wind = at('wind_speed_10m', c.wind_speed_10m);
+  const humidity = at('relative_humidity_2m', c.relative_humidity_2m);
+  const precip = at('precipitation', c.precipitation);
+  const code = at('weather_code', c.weather_code);
+  const pressure = at('surface_pressure', c.surface_pressure);
+  const vis = at('visibility', c.visibility);
+  const uv = at('uv_index', c.uv_index);
 
   document.getElementById('dTemp').textContent = typeof temp === 'number' ? `${Math.round(temp)}°C` : '—';
   document.getElementById('dCond').textContent = WMO_CODES[code] ?? '—';
   document.getElementById('dWind').textContent = typeof wind === 'number' ? `${Math.round(wind)} km/h` : '—';
   document.getElementById('dHumidity').textContent = typeof humidity === 'number' ? `${Math.round(humidity)}%` : '—';
   document.getElementById('dPrecip').textContent = typeof precip === 'number' ? `${precip.toFixed(1)} mm` : '—';
+  document.getElementById('dPressure').textContent = typeof pressure === 'number' ? `${Math.round(pressure)} hPa` : '—';
+  document.getElementById('dVis').textContent = typeof vis === 'number' ? `${(vis / 1000).toFixed(0)} km` : '—';
+  document.getElementById('dUV').textContent = typeof uv === 'number' ? uv.toFixed(1) : '—';
 
   document.getElementById('tWhen').textContent = hOffset === 0 ? 'Now' : `+${hOffset}h`;
   if (hOffset > 0 && typeof temp === 'number' && typeof c.temperature_2m === 'number') {
@@ -470,60 +603,53 @@ function renderForecastAt(stepIdx) {
   }
 }
 
-document.getElementById('timeSlider').addEventListener('input', (e) => {
-  renderForecastAt(Number(e.target.value));
-});
-
+document.getElementById('timeSlider').addEventListener('input', (e) => renderForecastAt(Number(e.target.value)));
 document.getElementById('detailClose').addEventListener('click', () => detail.classList.remove('open'));
+
+// ---------- quake popover ----------
+
+const quakePop = document.getElementById('quakePop');
+function showQuake(q) {
+  detail.classList.remove('open');
+  world.pointOfView({ lat: q.lat, lng: q.lng, altitude: 1.4 }, 1000);
+  document.getElementById('qpMag').textContent = `M ${q.mag.toFixed(1)}`;
+  document.getElementById('qpPlace').textContent = q.place;
+  const when = q.time ? new Date(q.time).toUTCString().replace('GMT', 'UTC') : '—';
+  document.getElementById('qpMeta').innerHTML =
+    `Depth ${q.depth != null ? q.depth.toFixed(0) + ' km' : '—'} · ${fmtCoord(q.lat, q.lng)}<br>${when}` +
+    (q.tsunami ? '<br><b style="color:#ff7a45">⚠ Tsunami evaluation issued</b>' : '');
+  quakePop.classList.add('open');
+}
+document.getElementById('quakeClose').addEventListener('click', () => quakePop.classList.remove('open'));
 
 // ---------- pins + dashboard actions ----------
 
 const pinActionBtn = document.getElementById('pinAction');
 const dashActionBtn = document.getElementById('dashAction');
-
 function updateDetailActionButtons() {
-  if (activePinId) {
-    pinActionBtn.textContent = '🗑 Remove pin';
-    pinActionBtn.classList.add('active');
-  } else {
-    pinActionBtn.textContent = '📌 Drop pin';
-    pinActionBtn.classList.remove('active');
-  }
+  if (activePinId) { pinActionBtn.textContent = '🗑 Remove pin'; pinActionBtn.classList.add('active'); }
+  else { pinActionBtn.textContent = '📌 Drop pin'; pinActionBtn.classList.remove('active'); }
   const inDash = activePoint && dashboardItems.some(d => sameCoord(d, activePoint));
-  dashActionBtn.textContent = inDash ? '★ Saved to dashboard' : '★ Save to dashboard';
+  dashActionBtn.textContent = inDash ? '★ Saved' : '★ Save';
   dashActionBtn.classList.toggle('active', inDash);
 }
-
 pinActionBtn.addEventListener('click', () => {
   if (!activePoint) return;
-  if (activePinId) {
-    pins = pins.filter(p => p.id !== activePinId);
-    savePins();
-    activePinId = null;
-  } else {
+  if (activePinId) { pins = pins.filter(p => p.id !== activePinId); savePins(); activePinId = null; }
+  else {
     const fallback = activePoint.name || fmtCoord(activePoint.lat, activePoint.lng);
     const label = window.prompt('Name this pin:', fallback) || fallback;
     const pin = { id: 'pin_' + Date.now(), name: label, lat: activePoint.lat, lng: activePoint.lng };
-    pins.push(pin);
-    savePins();
-    activePinId = pin.id;
+    pins.push(pin); savePins(); activePinId = pin.id;
   }
-  renderPoints();
-  updateDetailActionButtons();
-  renderDashboardPanelIfOpen();
+  renderPoints(); updateDetailActionButtons(); renderDashboardPanelIfOpen();
 });
-
 dashActionBtn.addEventListener('click', () => {
   if (!activePoint) return;
   const idx = dashboardItems.findIndex(d => sameCoord(d, activePoint));
-  if (idx >= 0) {
-    dashboardItems.splice(idx, 1);
-  } else {
-    dashboardItems.push({ name: activePoint.name || fmtCoord(activePoint.lat, activePoint.lng), lat: activePoint.lat, lng: activePoint.lng });
-  }
-  saveDashboard();
-  updateDetailActionButtons();
-  renderDashboardPanelIfOpen(true);
+  if (idx >= 0) dashboardItems.splice(idx, 1);
+  else dashboardItems.push({ name: activePoint.name || fmtCoord(activePoint.lat, activePoint.lng), lat: activePoint.lat, lng: activePoint.lng });
+  saveDashboard(); updateDetailActionButtons(); renderDashboardPanelIfOpen(true);
 });
 
 // ---------- dashboard panel ----------
@@ -535,19 +661,18 @@ const dashboardClose = document.getElementById('dashboardClose');
 let dashboardRefreshTimer = null;
 
 dashboardToggle.addEventListener('click', () => {
-  dashboardPanel.classList.add('open');
-  renderDashboardPanel();
-  if (dashboardRefreshTimer) clearInterval(dashboardRefreshTimer);
-  dashboardRefreshTimer = setInterval(renderDashboardPanel, 10 * 60 * 1000);
+  const open = dashboardPanel.classList.toggle('open');
+  if (open) {
+    renderDashboardPanel();
+    if (dashboardRefreshTimer) clearInterval(dashboardRefreshTimer);
+    dashboardRefreshTimer = setInterval(renderDashboardPanel, 10 * 60 * 1000);
+  } else if (dashboardRefreshTimer) { clearInterval(dashboardRefreshTimer); dashboardRefreshTimer = null; }
 });
 dashboardClose.addEventListener('click', () => {
   dashboardPanel.classList.remove('open');
   if (dashboardRefreshTimer) { clearInterval(dashboardRefreshTimer); dashboardRefreshTimer = null; }
 });
-
-function renderDashboardPanelIfOpen(force) {
-  if (force || dashboardPanel.classList.contains('open')) renderDashboardPanel();
-}
+function renderDashboardPanelIfOpen(force) { if (force || dashboardPanel.classList.contains('open')) renderDashboardPanel(); }
 
 async function renderDashboardPanel() {
   const entries = [
@@ -563,23 +688,14 @@ async function renderDashboardPanel() {
        <div class="dremove" data-idx="${i}">✕</div>
        <div class="dn">${e.name}${e.isPin ? '<span class="pin-tag">PIN</span>' : ''}</div>
        <div class="dm"><span>loading…</span><span>${fmtCoord(e.lat, e.lng)}</span></div>
-     </div>`
-  ).join('');
-
+     </div>`).join('');
   dashboardList.querySelectorAll('.dremove').forEach(btn => {
     btn.addEventListener('click', (ev) => {
       ev.stopPropagation();
       const entry = entries[Number(btn.dataset.idx)];
-      if (entry.isPin) {
-        pins = pins.filter(p => p.id !== entry.id);
-        savePins();
-        renderPoints();
-      } else {
-        dashboardItems = dashboardItems.filter(d => !sameCoord(d, entry));
-        saveDashboard();
-      }
-      updateDetailActionButtons();
-      renderDashboardPanel();
+      if (entry.isPin) { pins = pins.filter(p => p.id !== entry.id); savePins(); renderPoints(); }
+      else { dashboardItems = dashboardItems.filter(d => !sameCoord(d, entry)); saveDashboard(); }
+      updateDetailActionButtons(); renderDashboardPanel();
     });
   });
   dashboardList.querySelectorAll('.dash-card').forEach(card => {
@@ -588,7 +704,6 @@ async function renderDashboardPanel() {
       selectLocation(entry.lat, entry.lng, entry.name, entry.isPin ? entry.id : null);
     });
   });
-
   try {
     const lats = entries.map(e => e.lat).join(',');
     const lngs = entries.map(e => e.lng).join(',');
@@ -599,59 +714,42 @@ async function renderDashboardPanel() {
     dashboardList.querySelectorAll('.dash-card').forEach((card, i) => {
       const c = list[i]?.current;
       const span = card.querySelector('.dm span');
-      if (c && typeof c.temperature_2m === 'number') {
-        span.textContent = `${Math.round(c.temperature_2m)}°C · ${WMO_CODES[c.weather_code] ?? ''}`;
-      } else {
-        span.textContent = '—';
-      }
+      span.textContent = c && typeof c.temperature_2m === 'number'
+        ? `${Math.round(c.temperature_2m)}°C · ${WMO_CODES[c.weather_code] ?? ''}` : '—';
     });
-  } catch (err) {
-    dashboardList.querySelectorAll('.dm span').forEach(span => { span.textContent = '—'; });
-  }
+  } catch { dashboardList.querySelectorAll('.dm span').forEach(s => { s.textContent = '—'; }); }
 }
 
-// ---------- map-style zoom controls ----------
+// ---------- zoom controls ----------
 
 document.getElementById('zoomIn').addEventListener('click', () => {
-  const pov = world.pointOfView();
-  world.pointOfView({ lat: pov.lat, lng: pov.lng, altitude: Math.max(MIN_ALTITUDE, pov.altitude * 0.65) }, 500);
+  const p = world.pointOfView();
+  world.pointOfView({ lat: p.lat, lng: p.lng, altitude: Math.max(MIN_ALTITUDE, p.altitude * 0.65) }, 500);
 });
 document.getElementById('zoomOut').addEventListener('click', () => {
-  const pov = world.pointOfView();
-  world.pointOfView({ lat: pov.lat, lng: pov.lng, altitude: Math.min(3.2, pov.altitude / 0.65) }, 500);
+  const p = world.pointOfView();
+  world.pointOfView({ lat: p.lat, lng: p.lng, altitude: Math.min(3.2, p.altitude / 0.65) }, 500);
 });
-document.getElementById('zoomHome').addEventListener('click', () => {
-  world.pointOfView({ lat: 15, lng: 10, altitude: 2.4 }, 900);
-});
+document.getElementById('zoomHome').addEventListener('click', () => world.pointOfView({ lat: 15, lng: 10, altitude: 2.4 }, 900));
 
 // ---------- search ----------
 
 const searchInput = document.getElementById('searchInput');
 const searchResults = document.getElementById('searchResults');
 let searchDebounce = null;
-
 searchInput.addEventListener('input', () => {
   clearTimeout(searchDebounce);
   const q = searchInput.value.trim();
-  if (q.length < 2) {
-    searchResults.classList.remove('open');
-    searchResults.innerHTML = '';
-    return;
-  }
+  if (q.length < 2) { searchResults.classList.remove('open'); searchResults.innerHTML = ''; return; }
   searchDebounce = setTimeout(() => runSearch(q), 300);
 });
-
 async function runSearch(q) {
   try {
     const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q)}&count=6&language=en&format=json`;
     const res = await fetch(url);
     const data = await res.json();
     const items = data.results || [];
-    if (!items.length) {
-      searchResults.innerHTML = '<div class="empty">No matches</div>';
-      searchResults.classList.add('open');
-      return;
-    }
+    if (!items.length) { searchResults.innerHTML = '<div class="empty">No matches</div>'; searchResults.classList.add('open'); return; }
     searchResults.innerHTML = '';
     items.forEach(r => {
       const div = document.createElement('div');
@@ -666,138 +764,130 @@ async function runSearch(q) {
       searchResults.appendChild(div);
     });
     searchResults.classList.add('open');
-  } catch (err) {
-    searchResults.innerHTML = '<div class="empty">Search failed</div>';
-    searchResults.classList.add('open');
-  }
+  } catch { searchResults.innerHTML = '<div class="empty">Search failed</div>'; searchResults.classList.add('open'); }
 }
+document.addEventListener('click', (e) => { if (!e.target.closest('.search-wrap')) searchResults.classList.remove('open'); });
 
-document.addEventListener('click', (e) => {
-  if (!e.target.closest('.search-wrap')) searchResults.classList.remove('open');
+// ---------- layer controls (chips + rail tiles share data-layer) ----------
+
+const hintText = document.getElementById('hintText');
+const layerControls = {};
+document.querySelectorAll('[data-layer]').forEach(el => {
+  const key = el.dataset.layer;
+  (layerControls[key] = layerControls[key] || []).push(el);
+  el.addEventListener('click', (e) => { e.stopPropagation(); toggleLayer(key); });
 });
 
-// ---------- layers ----------
-// the pill row (top-right toolbar) is the sole activation control for layers —
-// each pill is a direct one-tap toggle, like a real maps app's layer chips.
-
-const layerState = { temp: false, precip: false, wind: false, clouds: false, currents: false, labels: false };
-const pills = {
-  temp: document.getElementById('pillTemp'),
-  precip: document.getElementById('pillPrecip'),
-  wind: document.getElementById('pillWind'),
-  clouds: document.getElementById('pillClouds'),
-  currents: document.getElementById('pillCurrents'),
-  labels: document.getElementById('pillLabels'),
-};
-const hintText = document.getElementById('hintText');
-
-function updateHint() {
-  const on = Object.keys(layerState).filter(k => layerState[k]);
-  hintText.textContent = on.length ? on.join(' + ') + ' active' : 'none active';
+function syncControls() {
+  Object.entries(layerControls).forEach(([key, els]) => els.forEach(el => el.classList.toggle('on', !!layerState[key])));
+  const on = [...FIELDS, ...OVERLAYS].filter(k => layerState[k]);
+  hintText.textContent = on.length ? on.join(' · ') : 'none';
 }
 
 async function toggleLayer(key) {
-  if (key === 'reset') {
-    Object.keys(layerState).forEach(k => layerState[k] = false);
-    Object.values(pills).forEach(p => p.classList.remove('on'));
-    applyLayers();
-    updateHint();
-    return;
+  if (!(key in layerState)) return;
+  if (FIELDS.includes(key)) {
+    const turningOn = !layerState[key];
+    FIELDS.forEach(f => layerState[f] = false); // fields are mutually exclusive
+    layerState[key] = turningOn;
+  } else {
+    layerState[key] = !layerState[key];
   }
-  layerState[key] = !layerState[key];
-  pills[key].classList.toggle('on', layerState[key]);
-  updateHint();
+  syncControls();
   await applyLayers();
 }
 
-Object.entries(pills).forEach(([key, pill]) => {
-  pill.addEventListener('click', (e) => {
-    e.stopPropagation();
-    toggleLayer(key);
-  });
-});
-
 document.getElementById('pillClear').addEventListener('click', (e) => {
   e.stopPropagation();
-  toggleLayer('reset');
+  [...FIELDS, ...OVERLAYS].forEach(k => layerState[k] = false);
+  syncControls();
+  applyLayers();
 });
 
 function applyCurrentArcs() {
-  if (!layerState.currents) {
-    world.arcsData([]);
-    return;
-  }
+  if (!layerState.currents) { world.arcsData([]); return; }
   world
     .arcsData(CURRENT_ARCS)
-    .arcStartLat('lat1').arcStartLng('lng1')
-    .arcEndLat('lat2').arcEndLng('lng2')
+    .arcStartLat('lat1').arcStartLng('lng1').arcEndLat('lat2').arcEndLng('lng2')
     .arcColor(d => d.color)
     .arcStroke(d => 0.4 + Math.min(1.2, d.speed * 0.5))
-    .arcAltitude(0.012)
-    .arcDashLength(0.4)
-    .arcDashGap(0.25)
+    .arcAltitude(0.012).arcDashLength(0.4).arcDashGap(0.25)
     .arcDashAnimateTime(d => Math.max(900, 7000 - d.speed * 3200))
-    .arcsTransitionDuration(400);
+    .arcLabel(d => `🌊 ${d.name} · ${d.speed.toFixed(1)} m/s`)
+    .arcsTransitionDuration(400)
+    .onArcClick(d => {
+      const mid = { lat: (d.lat1 + d.lat2) / 2, lng: (d.lng1 + d.lng2) / 2 };
+      document.getElementById('qpMag').textContent = `${d.speed.toFixed(1)} m/s`;
+      document.getElementById('qpPlace').textContent = d.name;
+      document.getElementById('qpMeta').innerHTML =
+        `Surface ocean current · documented mean speed<br>${fmtCoord(mid.lat, mid.lng)}`;
+      quakePop.querySelector('.qp-mag').style.color = 'var(--current)';
+      quakePop.style.borderColor = 'var(--current)';
+      quakePop.classList.add('open');
+    });
 }
 
 async function applyLayers() {
   applyCurrentArcs();
   refreshLabels();
+  renderPoints(); // picks up quakes / cloud-peaks toggles
 
-  const anyHeat = layerState.temp || layerState.precip;
-  const needsGrid = anyHeat || layerState.wind || layerState.clouds;
+  const field = FIELDS.find(k => layerState[k]);
+  const needsWeatherGrid = (field && field !== 'aqi') || layerState.wind || layerState.clouds || layerState.peaks;
 
-  if (!needsGrid) {
-    world.heatmapsData([]);
-    world.customLayerData([]);
-    cloudMesh.visible = false;
-    return;
-  }
-
-  setLoading(true);
-  let points;
-  try {
-    points = await fetchGridWeather();
-  } catch (err) {
+  // ensure data is present for whatever is active
+  if (needsWeatherGrid && !gridCache.points) {
+    setLoading(true);
+    try { await fetchGridWeather(); setApi(true); } catch { setApi(false); }
     setLoading(false);
-    return;
   }
-  setLoading(false);
+  if (layerState.peaks) { cloudPeaks = computeCloudPeaks(); renderPoints(); }
 
-  // temp/precip heatmap (only one can render at a time; temp takes priority if both toggled)
-  if (anyHeat) {
-    const useTemp = layerState.temp;
-    const weightKey = useTemp ? 'temp' : 'precip';
-    const domain = useTemp ? TEMP_DOMAIN : PRECIP_DOMAIN;
-    const scale = useTemp ? TEMP_SCALE : PRECIP_SCALE;
+  // scalar field heatmap (one at a time)
+  if (field) {
+    const cfg = FIELD_CONFIG[field];
+    let pts;
+    if (field === 'aqi') {
+      setLoading(true);
+      try { pts = await fetchAQGridCached(); setApi(true); } catch { setApi(false); pts = []; }
+      setLoading(false);
+    } else {
+      pts = gridCache.points || [];
+    }
     world
-      .heatmapsData([points])
-      .heatmapPointLat('lat')
-      .heatmapPointLng('lng')
-      .heatmapPointWeight(d => normalize(d[weightKey], domain[0], domain[1]) + 0.01)
-      .heatmapBandwidth(2.4)
-      .heatmapColorFn(t => scale(t))
+      .heatmapsData([pts])
+      .heatmapPointLat('lat').heatmapPointLng('lng')
+      .heatmapPointWeight(d => normalize(d[cfg.key], cfg.domain[0], cfg.domain[1]) + 0.01)
+      .heatmapBandwidth(field === 'aqi' ? 2.6 : 2.4)
+      .heatmapColorFn(t => cfg.scale(t))
       .heatmapTopAltitude(0.02);
   } else {
     world.heatmapsData([]);
   }
 
-  // wind arrows (oriented cones that surge forward along the wind direction, like flowing gusts)
+  // aurora
+  if (layerState.aurora) {
+    if (!auroraData) { try { auroraData = await fetchAurora(); updateAuroraTile(); } catch { setApi(false); } }
+    if (auroraData) { drawAurora(auroraAnimT); auroraMesh.visible = true; }
+  } else {
+    auroraMesh.visible = false;
+  }
+
+  // wind cones
   if (layerState.wind) {
-    const windPoints = points.filter(p => p.windSpeed > 1);
+    const windPoints = (gridCache.points || []).filter(p => p.windSpeed > 1);
     world
       .customLayerData(windPoints)
       .customThreeObjectUpdate((obj, d) => {
         const alt = 0.03;
         const t = performance.now() / 1000;
-        const wave = Math.sin(t * 1.3 + d.lat * 0.5 + d.lng * 0.5);
-        const flow = (wave + 1) / 2; // 0..1 traveling wave, phase varies by location
-        const travel = 25 + flow * 200; // km — cone surges forward then eases back, simulating flow
+        const flow = (Math.sin(t * 1.3 + d.lat * 0.5 + d.lng * 0.5) + 1) / 2;
+        const travel = 25 + flow * 200;
         const bearing = (d.windDir + 180) % 360;
-        const flowPos3 = destinationPoint(d.lat, d.lng, bearing, travel);
-        const aimPos3 = destinationPoint(d.lat, d.lng, bearing, travel + 320);
-        const p0 = world.getCoords(flowPos3.lat, flowPos3.lng, alt);
-        const p1 = world.getCoords(aimPos3.lat, aimPos3.lng, alt);
+        const flowPos = destinationPoint(d.lat, d.lng, bearing, travel);
+        const aimPos = destinationPoint(d.lat, d.lng, bearing, travel + 320);
+        const p0 = world.getCoords(flowPos.lat, flowPos.lng, alt);
+        const p1 = world.getCoords(aimPos.lat, aimPos.lng, alt);
         obj.position.set(p0.x, p0.y, p0.z);
         obj.lookAt(p1.x, p1.y, p1.z);
         const base = obj.userData.baseScale || 1;
@@ -810,14 +900,9 @@ async function applyLayers() {
         const color = lerpColor(hexToRgb('#1f8f6b'), hexToRgb('#7bffb0'), normalize(d.windSpeed, WIND_DOMAIN[0], WIND_DOMAIN[1]));
         const geometry = new THREE.ConeGeometry(0.35, 1.6, 8);
         geometry.rotateX(-Math.PI / 2);
-        const material = new THREE.MeshBasicMaterial({
-          color: new THREE.Color(color[0] / 255, color[1] / 255, color[2] / 255),
-          transparent: true,
-          opacity: 0.85,
-        });
+        const material = new THREE.MeshBasicMaterial({ color: new THREE.Color(color[0] / 255, color[1] / 255, color[2] / 255), transparent: true, opacity: 0.85 });
         const mesh = new THREE.Mesh(geometry, material);
-        mesh.userData.baseScale = scale;
-        mesh.userData.material = material;
+        mesh.userData.baseScale = scale; mesh.userData.material = material;
         mesh.scale.set(scale, scale, scale);
         return mesh;
       });
@@ -825,17 +910,115 @@ async function applyLayers() {
     world.customLayerData([]);
   }
 
-  // clouds: stylized canvas texture sphere, density driven by real cloud-cover %
-  if (layerState.clouds) {
-    drawClouds(points);
-    cloudMesh.visible = true;
-  } else {
-    cloudMesh.visible = false;
-  }
+  // clouds
+  if (layerState.clouds && gridCache.points) { drawClouds(gridCache.points); cloudMesh.visible = true; }
+  else cloudMesh.visible = false;
 }
 
-// continuously re-render wind cones so the pulse animation in customThreeObjectUpdate keeps ticking
 (function animateWindCones() {
   if (layerState.wind) world.customLayerData(world.customLayerData());
   requestAnimationFrame(animateWindCones);
+})();
+
+// ---------- global monitor tiles ----------
+
+function setText(id, v) { const el = document.getElementById(id); if (el) el.textContent = v; }
+
+async function updateQuakeTile() {
+  try {
+    quakeData = await fetchQuakes();
+    setText('qkCount', quakeData.length);
+    const strongest = quakeData[0];
+    setText('qkMax', strongest ? `strongest M${strongest.mag.toFixed(1)} · ${strongest.place}` : 'strongest —');
+    const alerts = quakeData.filter(q => q.mag >= 5).length;
+    setText('alertCount', alerts);
+    setTicker('tkQuakes', quakeData.length);
+    // spark of the strongest two-dozen magnitudes
+    drawBarChart(document.getElementById('qkSpark'), quakeData.slice(0, 24).map(q => q.mag), '#ff7a45');
+    if (layerState.quakes) renderPoints();
+    markUpdated(); setApi(true);
+  } catch { setApi(false); }
+}
+
+function updateAuroraTile() {
+  if (!auroraData) return;
+  setText('auGW', auroraData.peak);
+  setText('auHemi', `N peak ${auroraData.northPeak}% · S peak ${auroraData.southPeak}%`);
+}
+async function loadAurora() {
+  try { auroraData = await fetchAurora(); updateAuroraTile(); markUpdated(); setApi(true); }
+  catch { setApi(false); }
+}
+
+function updateGridTiles() {
+  if (!gridCache.points) return;
+  const pts = gridCache.points;
+  const cloudAvg = Math.round(pts.reduce((a, p) => a + (p.cloudCover || 0), 0) / pts.length);
+  setText('clAvg', cloudAvg);
+  const bar = document.getElementById('clBar'); if (bar) bar.style.width = cloudAvg + '%';
+  let peak = pts[0];
+  pts.forEach(p => { if (p.windSpeed > (peak?.windSpeed ?? 0)) peak = p; });
+  if (peak) { setText('wdPeak', Math.round(peak.windSpeed)); setText('wdWhere', `near ${nearestCityName(peak.lat, peak.lng)}`); }
+}
+
+// alert chip → jump to strongest quake + enable the layer
+document.getElementById('alertChip').addEventListener('click', () => {
+  if (!quakeData.length) return;
+  if (!layerState.quakes) toggleLayer('quakes');
+  showQuake(quakeData[0]);
+});
+
+// ---------- top clock + bottom ticker ----------
+
+function tickClock() {
+  const now = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  setText('utcClock', `${pad(now.getUTCHours())}:${pad(now.getUTCMinutes())}:${pad(now.getUTCSeconds())}`);
+  setText('utcDate', now.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' }) + ' UTC');
+}
+setInterval(tickClock, 1000); tickClock();
+
+function setTicker(id, v) { setText(id, v); }
+function markUpdated() {
+  const now = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  setText('lastUpdated', `${pad(now.getUTCHours())}:${pad(now.getUTCMinutes())}:${pad(now.getUTCSeconds())} UTC`);
+}
+let apiOk = true;
+function setApi(ok) {
+  apiOk = ok;
+  const el = document.getElementById('apiStatus');
+  if (el) { el.textContent = ok ? 'OPERATIONAL' : 'DEGRADED'; el.className = ok ? 'ok' : ''; el.style.color = ok ? '' : '#ff7a45'; }
+}
+
+// FPS meter
+let frames = 0, lastFpsT = performance.now();
+(function fpsLoop(now) {
+  frames++;
+  if (now - lastFpsT >= 1000) {
+    setText('fpsVal', Math.round((frames * 1000) / (now - lastFpsT)));
+    frames = 0; lastFpsT = now;
+  }
+  requestAnimationFrame(fpsLoop);
+})(performance.now());
+
+// ---------- shareable deep links: #layers=temp,aurora,quakes ----------
+// lets a terminal view be bookmarked/shared with its overlays pre-activated
+(function applyHashLayers() {
+  const m = location.hash.match(/layers=([a-z,]+)/i);
+  if (!m) return;
+  m[1].split(',').filter(k => k in layerState).forEach(k => { if (!layerState[k]) toggleLayer(k); });
+})();
+
+// ---------- init: warm up the live monitor in the background ----------
+
+(async function initMonitor() {
+  // weather grid powers cloud-cover + peak-wind tiles and several layers
+  fetchGridWeather().then(updateGridTiles).catch(() => setApi(false));
+  updateQuakeTile();
+  loadAurora();
+  // periodic refresh
+  setInterval(() => { gridCache.fetchedAt = 0; fetchGridWeather().then(updateGridTiles).catch(() => {}); }, GRID_TTL_MS);
+  setInterval(updateQuakeTile, 5 * 60 * 1000);
+  setInterval(() => { auroraData = null; loadAurora(); }, 5 * 60 * 1000);
 })();
