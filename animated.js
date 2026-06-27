@@ -88,14 +88,19 @@ const earthMat = new THREE.ShaderMaterial({
       float day = smoothstep(-0.12, 0.25, d);
       day = mix(1.0, day, uDayNight);
 
-      // vivid day side + warm glowing city lights on the night side
-      vec3 dayC = dayCol * 1.04;
-      vec3 nightC = nightCol * vec3(1.25, 1.0, 0.65) * 1.4;
-      vec3 col = mix(nightC, dayC, day);
-      // faint ambient so unlit oceans aren't pure black
-      col += dayCol * 0.03;
+      // the NASA blue-marble is muted/dark — color-grade it (exposure + saturation)
+      // into a vivid living-planet look
+      vec3 graded = clamp(dayCol * 3.2, 0.0, 1.0);
+      float lum = dot(graded, vec3(0.2126, 0.7152, 0.0722));
+      graded = clamp(mix(vec3(lum), graded, 1.7), 0.0, 1.0);
+      // gently push oceans bluer
+      graded.b = min(1.0, graded.b * 1.12);
+
+      // warm city lights glow on the night side
+      vec3 nightC = nightCol * vec3(1.3, 1.0, 0.6) * 6.0;
+      vec3 col = mix(nightC, graded, day);
       // sub-solar ocean glint
-      col += day * water * pow(max(d, 0.0), 14.0) * vec3(1.0, 0.96, 0.82) * 0.5;
+      col += day * water * pow(max(d, 0.0), 14.0) * vec3(1.0, 0.96, 0.82) * 0.4;
       gl_FragColor = vec4(col, 1.0);
     }
   `,
