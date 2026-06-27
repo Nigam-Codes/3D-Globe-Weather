@@ -393,6 +393,72 @@ requestAnimationFrame(animateAurora);
 
 const CURRENT_ARCS = expandToSegments(CURRENT_PATHS);
 
+// ---------- wind particle flow (ported from the animated build) ----------
+// thousands of points advected across the surface by the live wind grid, colored
+// by speed — replaces the old cone glyphs for the "Wind flow" overlay
+const WIND_N = 7000;
+const wLat = new Float32Array(WIND_N), wLng = new Float32Array(WIND_N), wLife = new Float32Array(WIND_N);
+const wPos = new Float32Array(WIND_N * 3), wCol = new Float32Array(WIND_N * 3);
+function seedWind(i) { wLat[i] = Math.random() * 180 - 90; wLng[i] = Math.random() * 360 - 180; wLife[i] = 20 + Math.random() * 80; }
+for (let i = 0; i < WIND_N; i++) seedWind(i);
+
+const wGeo = new THREE.BufferGeometry();
+wGeo.setAttribute('position', new THREE.BufferAttribute(wPos, 3));
+wGeo.setAttribute('color', new THREE.BufferAttribute(wCol, 3));
+const windPointsObj = new THREE.Points(wGeo, new THREE.PointsMaterial({
+  size: 0.9, vertexColors: true, transparent: true, opacity: 0.9,
+  blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true,
+}));
+windPointsObj.visible = false;
+world.scene().add(windPointsObj);
+const WIND_COOL = new THREE.Color('#2de0c9'), WIND_HOT = new THREE.Color('#ffffff');
+
+// lookup of (u,v) wind components on the 15° grid, rebuilt when the grid refreshes
+let windLookup = null, windLookupAt = -1;
+function getWindLookup() {
+  if (!gridCache.points) return null;
+  if (windLookup && windLookupAt === gridCache.fetchedAt) return windLookup;
+  const m = {};
+  gridCache.points.forEach(p => {
+    const toRad = (p.windDir + 180) * Math.PI / 180; // direction wind blows TOWARD
+    m[`${p.lat}_${p.lng}`] = { u: p.windSpeed * Math.sin(toRad), v: p.windSpeed * Math.cos(toRad), speed: p.windSpeed };
+  });
+  windLookup = m; windLookupAt = gridCache.fetchedAt;
+  return m;
+}
+function sampleWind(lat, lng) {
+  if (!windLookup) return { u: 0, v: 0, speed: 0 };
+  let rl = Math.max(-75, Math.min(75, Math.round(lat / 15) * 15));
+  let rg = Math.round(lng / 15) * 15; if (rg >= 180) rg -= 360; if (rg < -180) rg += 360;
+  return windLookup[`${rl}_${rg}`] || { u: 0, v: 0, speed: 0 };
+}
+
+let _windT = performance.now();
+function animateWind(now) {
+  const dt = Math.min(0.05, (now - _windT) / 1000); _windT = now;
+  if (windPointsObj.visible && getWindLookup()) {
+    const k = 3.0; // advection strength
+    for (let i = 0; i < WIND_N; i++) {
+      const w = sampleWind(wLat[i], wLng[i]);
+      wLng[i] += (w.u * k * dt) / Math.max(0.2, Math.cos(wLat[i] * Math.PI / 180));
+      wLat[i] += w.v * k * dt;
+      wLife[i] -= dt * 12;
+      if (wLat[i] > 85 || wLat[i] < -85 || wLife[i] <= 0) seedWind(i);
+      if (wLng[i] > 180) wLng[i] -= 360; if (wLng[i] < -180) wLng[i] += 360;
+      const c = world.getCoords(wLat[i], wLng[i], 0.015);
+      wPos[i * 3] = c.x; wPos[i * 3 + 1] = c.y; wPos[i * 3 + 2] = c.z;
+      const t = Math.min(1, w.speed / 45);
+      wCol[i * 3] = WIND_COOL.r + (WIND_HOT.r - WIND_COOL.r) * t;
+      wCol[i * 3 + 1] = WIND_COOL.g + (WIND_HOT.g - WIND_COOL.g) * t;
+      wCol[i * 3 + 2] = WIND_COOL.b + (WIND_HOT.b - WIND_COOL.b) * t;
+    }
+    wGeo.attributes.position.needsUpdate = true;
+    wGeo.attributes.color.needsUpdate = true;
+  }
+  requestAnimationFrame(animateWind);
+}
+requestAnimationFrame(animateWind);
+
 // ---------- layer state ----------
 
 const FIELDS = ['temp', 'precip', 'pressure', 'aqi'];
@@ -873,52 +939,16 @@ async function applyLayers() {
     auroraMesh.visible = false;
   }
 
-  // wind cones
-  if (layerState.wind) {
-    const windPoints = (gridCache.points || []).filter(p => p.windSpeed > 1);
-    world
-      .customLayerData(windPoints)
-      .customThreeObjectUpdate((obj, d) => {
-        const alt = 0.03;
-        const t = performance.now() / 1000;
-        const flow = (Math.sin(t * 1.3 + d.lat * 0.5 + d.lng * 0.5) + 1) / 2;
-        const travel = 25 + flow * 200;
-        const bearing = (d.windDir + 180) % 360;
-        const flowPos = destinationPoint(d.lat, d.lng, bearing, travel);
-        const aimPos = destinationPoint(d.lat, d.lng, bearing, travel + 320);
-        const p0 = world.getCoords(flowPos.lat, flowPos.lng, alt);
-        const p1 = world.getCoords(aimPos.lat, aimPos.lng, alt);
-        obj.position.set(p0.x, p0.y, p0.z);
-        obj.lookAt(p1.x, p1.y, p1.z);
-        const base = obj.userData.baseScale || 1;
-        const pulse = 0.82 + flow * 0.5;
-        obj.scale.set(base * pulse, base * pulse, base * pulse * 1.15);
-        if (obj.userData.material) obj.userData.material.opacity = 0.4 + flow * 0.5;
-      })
-      .customThreeObject(d => {
-        const scale = Math.max(0.6, Math.min(2.6, d.windSpeed / 12));
-        const color = lerpColor(hexToRgb('#1f8f6b'), hexToRgb('#7bffb0'), normalize(d.windSpeed, WIND_DOMAIN[0], WIND_DOMAIN[1]));
-        const geometry = new THREE.ConeGeometry(0.35, 1.6, 8);
-        geometry.rotateX(-Math.PI / 2);
-        const material = new THREE.MeshBasicMaterial({ color: new THREE.Color(color[0] / 255, color[1] / 255, color[2] / 255), transparent: true, opacity: 0.85 });
-        const mesh = new THREE.Mesh(geometry, material);
-        mesh.userData.baseScale = scale; mesh.userData.material = material;
-        mesh.scale.set(scale, scale, scale);
-        return mesh;
-      });
-  } else {
-    world.customLayerData([]);
-  }
+  // wind particle flow — the heavy lifting is in animateWind(); here we just
+  // warm the grid lookup and show/hide the particle cloud
+  if (layerState.wind) { getWindLookup(); windPointsObj.visible = true; }
+  else { windPointsObj.visible = false; }
 
   // clouds
   if (layerState.clouds && gridCache.points) { drawClouds(gridCache.points); cloudMesh.visible = true; }
   else cloudMesh.visible = false;
 }
 
-(function animateWindCones() {
-  if (layerState.wind) world.customLayerData(world.customLayerData());
-  requestAnimationFrame(animateWindCones);
-})();
 
 // ---------- global monitor tiles ----------
 
