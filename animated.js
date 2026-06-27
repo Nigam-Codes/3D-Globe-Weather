@@ -137,14 +137,14 @@ const cloudMat = new THREE.ShaderMaterial({
     uniform float uDayNight, uShift;
     void main(){
       float a = texture2D(uClouds, vec2(vUv.x + uShift, vUv.y)).r;
-      // keep only the densest cloud cores so the blue-marble surface dominates
-      a = smoothstep(0.55, 0.92, a);
+      // keep only the densest cloud cores, rendered as wispy white veils
+      a = smoothstep(0.55, 0.95, a);
       if(a < 0.03) discard;
       float d = dot(normalize(vWN), normalize(uSunDir));
       float day = smoothstep(-0.12, 0.25, d);
       day = mix(1.0, day, uDayNight);
-      float bright = mix(0.5, 1.0, day);
-      gl_FragColor = vec4(vec3(bright), a * mix(0.16, 0.42, day));
+      float bright = mix(0.6, 1.1, day);
+      gl_FragColor = vec4(vec3(bright), a * mix(0.10, 0.34, day));
     }
   `,
 });
@@ -289,7 +289,7 @@ updateSun();
 
 // ---------- layer toggles ----------
 
-const layers = { clouds: true, wind: true, atmos: true, daynight: true };
+const layers = { clouds: false, wind: true, atmos: true, daynight: true };
 document.querySelectorAll('.tog').forEach(btn => {
   btn.addEventListener('click', () => {
     const fx = btn.dataset.fx;
