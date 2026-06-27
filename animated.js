@@ -15,8 +15,7 @@ const host = document.getElementById('scene');
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.0;
+renderer.toneMapping = THREE.NoToneMapping; // punchy sRGB color (ACES desaturated the marble)
 host.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
@@ -29,7 +28,7 @@ controls.dampingFactor = 0.08;
 controls.minDistance = EARTH_R * 1.3;
 controls.maxDistance = EARTH_R * 4;
 controls.autoRotate = true;
-controls.autoRotateSpeed = 0.25;
+controls.autoRotateSpeed = 0.14;
 
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
@@ -307,8 +306,8 @@ const loadingEl = document.getElementById('loading');
 function animate() {
   const dt = Math.min(0.05, clock.getDelta());
 
-  // advance the day/night terminator (sped-up day cycle for a living feel)
-  sunAngle -= dt * timeSpeed * 0.5;
+  // advance the day/night terminator — gentle so the lit side lingers in view
+  sunAngle -= dt * timeSpeed * 0.12;
   if (sunAngle < -Math.PI) sunAngle += 2 * Math.PI;
   updateSun();
 
