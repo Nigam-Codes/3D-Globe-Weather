@@ -15,6 +15,8 @@ const host = document.getElementById('scene');
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
 host.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
@@ -48,45 +50,50 @@ const nightTex = texLoader.load(`${IMG}/earth-night.jpg`);
 const waterTex = texLoader.load(`${IMG}/earth-water.png`);
 [dayTex, nightTex, waterTex].forEach(t => { t.colorSpace = THREE.SRGBColorSpace; });
 
+// world-space sun direction: drives the terminator independent of texture
+// orientation, so the lit day side reliably faces the camera on load
+const sunDir = new THREE.Vector3(0, 0.4, 1).normalize();
 const earthUniforms = {
   uDay: { value: dayTex },
   uNight: { value: nightTex },
   uWater: { value: waterTex },
-  uSunLat: { value: 0.4 },
-  uSunLon: { value: 0.0 },
+  uSunDir: { value: sunDir },
   uDayNight: { value: 1.0 }, // 1 = terminator on, 0 = full daylight
 };
 
 const earthMat = new THREE.ShaderMaterial({
   uniforms: earthUniforms,
   vertexShader: /* glsl */`
-    varying vec2 vUv;
-    void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }
+    varying vec2 vUv; varying vec3 vWN;
+    void main(){
+      vUv = uv;
+      vWN = normalize(mat3(modelMatrix) * normal);
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0);
+    }
   `,
   fragmentShader: /* glsl */`
     precision highp float;
-    varying vec2 vUv;
+    varying vec2 vUv; varying vec3 vWN;
     uniform sampler2D uDay, uNight, uWater;
-    uniform float uSunLat, uSunLon, uDayNight;
-    const float PI = 3.1415926;
+    uniform vec3 uSunDir;
+    uniform float uDayNight;
     void main(){
       vec3 dayCol = texture2D(uDay, vUv).rgb;
       vec3 nightCol = texture2D(uNight, vUv).rgb;
       float water = texture2D(uWater, vUv).r;
 
-      // reconstruct geographic lat/lon from the equirectangular UV
-      float lon = (vUv.x - 0.5) * 2.0 * PI;
-      float lat = (0.5 - vUv.y) * PI;
-      // cosine of angular distance to the sub-solar point
-      float cosT = sin(lat)*sin(uSunLat) + cos(lat)*cos(uSunLat)*cos(lon - uSunLon);
-      float day = smoothstep(-0.12, 0.22, cosT);
+      float d = dot(normalize(vWN), normalize(uSunDir));
+      float day = smoothstep(-0.12, 0.25, d);
       day = mix(1.0, day, uDayNight);
 
-      vec3 col = mix(nightCol * 1.25, dayCol, day);
+      // vivid day side + warm glowing city lights on the night side
+      vec3 dayC = dayCol * 1.04;
+      vec3 nightC = nightCol * vec3(1.25, 1.0, 0.65) * 1.4;
+      vec3 col = mix(nightC, dayC, day);
+      // faint ambient so unlit oceans aren't pure black
+      col += dayCol * 0.03;
       // sub-solar ocean glint
-      col += day * water * pow(max(cosT, 0.0), 12.0) * vec3(1.0, 0.95, 0.8) * 0.6;
-      // cool the night side slightly
-      col *= mix(vec3(0.65,0.72,0.95), vec3(1.0), day);
+      col += day * water * pow(max(d, 0.0), 14.0) * vec3(1.0, 0.96, 0.82) * 0.5;
       gl_FragColor = vec4(col, 1.0);
     }
   `,
@@ -99,8 +106,7 @@ scene.add(earth);
 
 const cloudUniforms = {
   uClouds: { value: null },
-  uSunLat: earthUniforms.uSunLat,
-  uSunLon: earthUniforms.uSunLon,
+  uSunDir: earthUniforms.uSunDir,
   uDayNight: earthUniforms.uDayNight,
   uShift: { value: 0.0 },
 };
@@ -109,25 +115,29 @@ const cloudMat = new THREE.ShaderMaterial({
   transparent: true,
   depthWrite: false,
   vertexShader: /* glsl */`
-    varying vec2 vUv;
-    void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }
+    varying vec2 vUv; varying vec3 vWN;
+    void main(){
+      vUv = uv;
+      vWN = normalize(mat3(modelMatrix) * normal);
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0);
+    }
   `,
   fragmentShader: /* glsl */`
     precision highp float;
-    varying vec2 vUv;
+    varying vec2 vUv; varying vec3 vWN;
     uniform sampler2D uClouds;
-    uniform float uSunLat, uSunLon, uDayNight, uShift;
-    const float PI = 3.1415926;
+    uniform vec3 uSunDir;
+    uniform float uDayNight, uShift;
     void main(){
       float a = texture2D(uClouds, vec2(vUv.x + uShift, vUv.y)).r;
-      if(a < 0.04) discard;
-      float lon = (vUv.x - 0.5) * 2.0 * PI;
-      float lat = (0.5 - vUv.y) * PI;
-      float cosT = sin(lat)*sin(uSunLat) + cos(lat)*cos(uSunLat)*cos(lon - uSunLon);
-      float day = smoothstep(-0.12, 0.22, cosT);
+      // keep only well-defined cloud masses so the blue-marble surface shows through
+      a = smoothstep(0.35, 0.85, a);
+      if(a < 0.03) discard;
+      float d = dot(normalize(vWN), normalize(uSunDir));
+      float day = smoothstep(-0.12, 0.25, d);
       day = mix(1.0, day, uDayNight);
-      float bright = mix(0.30, 1.0, day);
-      gl_FragColor = vec4(vec3(bright), a * mix(0.35, 0.7, day));
+      float bright = mix(0.35, 1.0, day);
+      gl_FragColor = vec4(vec3(bright), a * mix(0.22, 0.5, day));
     }
   `,
 });
@@ -247,26 +257,28 @@ function updateWind(dt) {
   pGeo.attributes.color.needsUpdate = true;
 }
 
-// ---------- sun: seed the terminator at the real sub-solar point, then animate ----------
+// ---------- sun: real seasonal declination (tilt), animated longitude sweep ----------
 
-function subSolar(date = new Date()) {
+function solarDeclination(date = new Date()) {
   try {
     const t = Astronomy.MakeTime(date);
     const eq = Astronomy.Equator(Astronomy.Body.Sun, t, new Astronomy.Observer(0, 0, 0), true, true);
-    const gast = Astronomy.SiderealTime(t); // hours
-    let lon = (eq.ra - gast) * 15; // degrees
-    lon = ((lon + 540) % 360) - 180;
-    return { lat: eq.dec * Math.PI / 180, lon: lon * Math.PI / 180 };
+    return eq.dec * Math.PI / 180;
   } catch {
-    // approximate fallback
-    const h = date.getUTCHours() + date.getUTCMinutes() / 60;
     const doy = Math.floor((date - new Date(Date.UTC(date.getUTCFullYear(), 0, 0))) / 864e5);
-    return { lat: 23.44 * Math.PI / 180 * Math.sin(2 * Math.PI * (doy - 81) / 365), lon: -(h - 12) * 15 * Math.PI / 180 };
+    return 23.44 * Math.PI / 180 * Math.sin(2 * Math.PI * (doy - 81) / 365);
   }
 }
-const sun0 = subSolar();
-earthUniforms.uSunLat.value = sun0.lat;
-earthUniforms.uSunLon.value = sun0.lon;
+const DECL = solarDeclination();
+let sunAngle = 0; // 0 → day side faces the camera (+Z)
+function updateSun() {
+  sunDir.set(
+    Math.cos(DECL) * Math.sin(sunAngle),
+    Math.sin(DECL),
+    Math.cos(DECL) * Math.cos(sunAngle)
+  ).normalize();
+}
+updateSun();
 
 // ---------- layer toggles ----------
 
@@ -296,8 +308,9 @@ function animate() {
   const dt = Math.min(0.05, clock.getDelta());
 
   // advance the day/night terminator (sped-up day cycle for a living feel)
-  earthUniforms.uSunLon.value -= dt * timeSpeed * 0.6;
-  if (earthUniforms.uSunLon.value < -Math.PI) earthUniforms.uSunLon.value += 2 * Math.PI;
+  sunAngle -= dt * timeSpeed * 0.5;
+  if (sunAngle < -Math.PI) sunAngle += 2 * Math.PI;
+  updateSun();
 
   // drift clouds slowly relative to the surface
   cloudUniforms.uShift.value += dt * 0.004;
@@ -312,9 +325,9 @@ function animate() {
   if (now - fpsT >= 500) {
     document.getElementById('fps').textContent = Math.round((frames * 1000) / (now - fpsT));
     frames = 0; fpsT = now;
-    const lonDeg = (earthUniforms.uSunLon.value * 180 / Math.PI).toFixed(0);
-    const latDeg = (earthUniforms.uSunLat.value * 180 / Math.PI).toFixed(0);
-    subEl.textContent = `${latDeg}°, ${lonDeg}°`;
+    const tiltDeg = (DECL * 180 / Math.PI).toFixed(0);
+    let phase = (sunAngle * 180 / Math.PI) % 360; if (phase < 0) phase += 360;
+    subEl.textContent = `tilt ${tiltDeg}° · ${phase.toFixed(0)}°`;
   }
   requestAnimationFrame(animate);
 }
