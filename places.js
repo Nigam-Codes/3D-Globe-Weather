@@ -128,8 +128,11 @@ export const CITIES = [
 
 // Altitude thresholds (Globe.gl camera altitude) that decide how many city
 // tiers are revealed — the lower the altitude (closer zoom), the more detail.
+// 4 zoom levels drive progressive label disclosure:
+//   1 = far (world view, no labels) · 2 = countries · 3 = + major cities · 4 = + towns
 export function tierForAltitude(altitude) {
   if (altitude > 1.3) return 1;
-  if (altitude > 0.6) return 2;
-  return 3;
+  if (altitude > 0.7) return 2;
+  if (altitude > 0.42) return 3;
+  return 4;
 }

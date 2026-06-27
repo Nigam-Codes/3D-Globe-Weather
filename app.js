@@ -92,6 +92,31 @@ function buildGrid() {
   return points;
 }
 
+// ---------- resilient fetch with 429 (rate-limit) backoff ----------
+// Open-Meteo rate-limits per IP; on a 429 we surface a "RATE-LIMITED" status,
+// wait with exponential backoff, and retry so the app recovers on its own.
+const delay = (ms) => new Promise(r => setTimeout(r, ms));
+async function fetchJSON(url, { retries = 4 } = {}) {
+  for (let attempt = 0; ; attempt++) {
+    let res;
+    try {
+      res = await fetch(url);
+    } catch (e) {
+      if (attempt >= retries) throw e;
+      await delay(Math.min(20000, 1500 * 2 ** attempt) + Math.random() * 800);
+      continue;
+    }
+    if (res.status === 429) {
+      setApiState('limited');
+      if (attempt >= retries) throw new Error('rate-limited');
+      await delay(Math.min(25000, 2000 * 2 ** attempt) + Math.random() * 1000);
+      continue;
+    }
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.json();
+  }
+}
+
 let gridInflight = null;
 async function fetchGridWeather() {
   const now = Date.now();
@@ -112,9 +137,7 @@ async function fetchGridWeather() {
       const lngs = chunk.map(p => p.lng).join(',');
       const url = `https://api.open-meteo.com/v1/forecast?latitude=${lats}&longitude=${lngs}` +
         `&current=temperature_2m,precipitation,wind_speed_10m,wind_direction_10m,cloud_cover,surface_pressure`;
-      const res = await fetch(url);
-      if (!res.ok) throw new Error('Grid fetch failed');
-      const data = await res.json();
+      const data = await fetchJSON(url);
       const list = Array.isArray(data) ? data : [data];
       return list.map((d, i) => ({
         lat: chunk[i].lat, lng: chunk[i].lng,
@@ -137,6 +160,45 @@ async function fetchGridWeather() {
 
   try { return await gridInflight; }
   finally { gridInflight = null; }
+}
+
+// Densify the coarse 15° grid into a smooth ~5° field by bilinearly interpolating
+// each cell from its four surrounding measured locations — makes the temperature
+// (and pressure/precip) overlay read as a true heatmap of nearby temperatures
+// rather than coarse blobs. Pure client-side maths, no extra API calls.
+const _densifyCache = { key: '', step: 0, fetchedAt: 0, byField: {} };
+function densifyField(points, field, step = 5) {
+  if (_densifyCache.fetchedAt === gridCache.fetchedAt && _densifyCache.byField[field]) {
+    return _densifyCache.byField[field];
+  }
+  const at = {}; // "lat_lng" -> value
+  points.forEach(p => { at[`${p.lat}_${p.lng}`] = p[field]; });
+  const val = (la, lo) => {
+    if (lo >= 180) lo -= 360; if (lo < -180) lo += 360;
+    return at[`${la}_${lo}`];
+  };
+  const out = [];
+  for (let lat = -75; lat <= 75; lat += step) {
+    for (let lng = -180; lng < 180; lng += step) {
+      const la0 = Math.floor(lat / 15) * 15, la1 = Math.min(75, la0 + 15);
+      const lo0 = Math.floor(lng / 15) * 15, lo1 = lo0 + 15;
+      const q00 = val(la0, lo0), q01 = val(la0, lo1), q10 = val(la1, lo0), q11 = val(la1, lo1);
+      const corners = [q00, q01, q10, q11].filter(v => typeof v === 'number');
+      if (!corners.length) continue;
+      const ft = (lat - la0) / 15, fg = ((lng - lo0) + 360) % 360 / 15;
+      // bilinear with graceful fallback to the mean of any present corners
+      let v;
+      if (corners.length === 4) {
+        v = q00 * (1 - ft) * (1 - fg) + q01 * (1 - ft) * fg + q10 * ft * (1 - fg) + q11 * ft * fg;
+      } else {
+        v = corners.reduce((a, b) => a + b, 0) / corners.length;
+      }
+      out.push({ lat, lng, [field]: v });
+    }
+  }
+  if (_densifyCache.fetchedAt !== gridCache.fetchedAt) { _densifyCache.fetchedAt = gridCache.fetchedAt; _densifyCache.byField = {}; }
+  _densifyCache.byField[field] = out;
+  return out;
 }
 
 let aqGridCache = { points: null, fetchedAt: 0 };
@@ -537,19 +599,35 @@ function renderRings() {
     .ringMaxRadius(2.4).ringPropagationSpeed(2.2).ringRepeatPeriod(1500);
 }
 
+// Progressive label disclosure as the user zooms in:
+//   far (tier 1)      → nothing (keeps the world view clean)
+//   tier 2            → countries
+//   tier 3            → + major cities
+//   tier 4 (closest)  → + smaller cities / towns
+// (True street-level labels would need an external street/vector-tile dataset,
+//  which doesn't fit the keyless static design — towns are the finest level here.)
 function refreshLabels() {
-  if (!layerState.labels) { world.labelsData([]); return; }
-  const CITY_MIN_SEP_KM = { 1: 900, 2: 220, 3: 55 };
-  const rawCityLabels = currentTier >= 2 ? visibleCities().map(c => ({ ...c, kind: 'city' })) : [];
-  const cityLabels = declutter(rawCityLabels, CITY_MIN_SEP_KM[currentTier] ?? 220);
-  const countryLabels = declutter(COUNTRIES.map(c => ({ ...c, kind: 'country' })), 140);
+  if (!layerState.labels || currentTier < 2) { world.labelsData([]); return; }
+
+  const out = [];
+  out.push(...declutter(COUNTRIES.map(c => ({ ...c, kind: 'country' })), 140));
+  if (currentTier >= 3) {
+    const major = CITIES.filter(c => c.tier <= 2).map(c => ({ ...c, kind: 'city' }));
+    out.push(...declutter(major, currentTier >= 4 ? 80 : 220));
+  }
+  if (currentTier >= 4) {
+    const towns = CITIES.filter(c => c.tier === 3).map(c => ({ ...c, kind: 'town' }));
+    out.push(...declutter(towns, 45));
+  }
+
   world
-    .labelsData([...countryLabels, ...cityLabels])
+    .labelsData(out)
     .labelLat('lat').labelLng('lng').labelText('name')
-    .labelSize(d => d.kind === 'country' ? 1.15 : 0.55)
-    .labelColor(d => d.kind === 'country' ? 'rgba(255,207,92,0.85)' : 'rgba(232,237,245,0.85)')
-    .labelDotRadius(d => d.kind === 'country' ? 0 : 0.25)
-    .labelAltitude(0.006).labelResolution(3).labelIncludeDot(d => d.kind !== 'country');
+    .labelSize(d => d.kind === 'country' ? 1.1 : d.kind === 'city' ? 0.5 : 0.38)
+    .labelColor(d => d.kind === 'country' ? 'rgba(255,207,92,0.9)'
+      : d.kind === 'city' ? 'rgba(232,237,245,0.92)' : 'rgba(184,200,228,0.85)')
+    .labelDotRadius(d => d.kind === 'country' ? 0 : d.kind === 'city' ? 0.22 : 0.16)
+    .labelAltitude(0.007).labelResolution(3).labelIncludeDot(d => d.kind !== 'country');
 }
 renderPoints();
 
@@ -918,13 +996,15 @@ async function applyLayers() {
       try { pts = await fetchAQGridCached(); setApi(true); } catch { setApi(false); pts = []; }
       setLoading(false);
     } else {
-      pts = gridCache.points || [];
+      // densify the coarse grid so the field reads as a smooth heatmap of the
+      // interpolated temperatures/values of surrounding locations
+      pts = gridCache.points ? densifyField(gridCache.points, cfg.key, 5) : [];
     }
     world
       .heatmapsData([pts])
       .heatmapPointLat('lat').heatmapPointLng('lng')
       .heatmapPointWeight(d => normalize(d[cfg.key], cfg.domain[0], cfg.domain[1]) + 0.01)
-      .heatmapBandwidth(field === 'aqi' ? 2.6 : 2.4)
+      .heatmapBandwidth(field === 'aqi' ? 2.6 : 1.6)
       .heatmapColorFn(t => cfg.scale(t))
       .heatmapTopAltitude(0.02);
   } else {
@@ -1014,12 +1094,15 @@ function markUpdated() {
   const pad = n => String(n).padStart(2, '0');
   setText('lastUpdated', `${pad(now.getUTCHours())}:${pad(now.getUTCMinutes())}:${pad(now.getUTCSeconds())} UTC`);
 }
-let apiOk = true;
-function setApi(ok) {
-  apiOk = ok;
+// API status: 'ok' | 'limited' (rate-limited, auto-retrying) | 'degraded'
+function setApiState(state) {
   const el = document.getElementById('apiStatus');
-  if (el) { el.textContent = ok ? 'OPERATIONAL' : 'DEGRADED'; el.className = ok ? 'ok' : ''; el.style.color = ok ? '' : '#ff7a45'; }
+  if (!el) return;
+  if (state === 'ok') { el.textContent = 'OPERATIONAL'; el.className = 'ok'; el.style.color = ''; }
+  else if (state === 'limited') { el.textContent = 'RATE-LIMITED · RETRYING'; el.className = ''; el.style.color = '#ffcf5c'; }
+  else { el.textContent = 'DEGRADED'; el.className = ''; el.style.color = '#ff7a45'; }
 }
+function setApi(ok) { setApiState(ok ? 'ok' : 'degraded'); }
 
 // FPS meter
 let frames = 0, lastFpsT = performance.now();
@@ -1042,13 +1125,29 @@ let frames = 0, lastFpsT = performance.now();
 
 // ---------- init: warm up the live monitor in the background ----------
 
+function gridLayersActive() {
+  return layerState.temp || layerState.precip || layerState.pressure ||
+         layerState.wind || layerState.clouds || layerState.peaks;
+}
+
+// keep trying the weather grid until it loads (survives a rate-limited start),
+// then refresh tiles and re-render any grid-dependent layer that's already on
+function warmGrid() {
+  fetchGridWeather()
+    .then(() => {
+      updateGridTiles();
+      setApi(true);
+      if (gridLayersActive()) applyLayers();
+    })
+    .catch(() => setTimeout(warmGrid, 15000)); // rate-limited / offline → retry shortly
+}
+
 (async function initMonitor() {
-  // weather grid powers cloud-cover + peak-wind tiles and several layers
-  fetchGridWeather().then(updateGridTiles).catch(() => setApi(false));
+  warmGrid();
   updateQuakeTile();
   loadAurora();
-  // periodic refresh
-  setInterval(() => { gridCache.fetchedAt = 0; fetchGridWeather().then(updateGridTiles).catch(() => {}); }, GRID_TTL_MS);
+  // periodic refresh (also self-heals if a refresh gets rate-limited)
+  setInterval(() => { gridCache.fetchedAt = 0; warmGrid(); }, GRID_TTL_MS);
   setInterval(updateQuakeTile, 5 * 60 * 1000);
   setInterval(() => { auroraData = null; loadAurora(); }, 5 * 60 * 1000);
 })();
