@@ -39,7 +39,13 @@ function sameCoord(a, b) { return Math.abs(a.lat - b.lat) < 0.001 && Math.abs(a.
 // ---------- zoom-based level of detail ----------
 
 let currentTier = 1;
-function visibleCities() { return CITIES.filter(c => c.tier <= currentTier); }
+// City dots disclose with zoom, mirroring the labels: none at world view (tier 1)
+// for a clean planet, then major→minor cities as you zoom in. Pins, the selected
+// location, and quakes are added separately in renderPoints and always show.
+function visibleCities() {
+  if (currentTier <= 1) return [];
+  return CITIES.filter(c => c.tier <= currentTier - 1);
+}
 
 // ---------- color + math helpers ----------
 
