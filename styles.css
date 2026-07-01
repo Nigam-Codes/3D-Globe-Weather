@@ -24,7 +24,7 @@
 }
 *{box-sizing:border-box;}
 html,body{margin:0;height:100%;background:var(--bg-deep);overflow:hidden;
-  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:var(--text);}
+  font-family:'Space Grotesk',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:var(--text);}
 .stage{position:relative;width:100%;height:100vh;}
 #globeViz{position:absolute;inset:0;}
 #globeViz canvas{outline:none;}
@@ -37,7 +37,7 @@ b{font-variant-numeric:tabular-nums;}
   background:linear-gradient(180deg,rgba(8,11,20,0.96),rgba(8,11,20,0.72));
   border-bottom:1px solid var(--line);backdrop-filter:blur(10px);
 }
-.brand{font-size:14px;font-weight:700;letter-spacing:.06em;color:var(--text);white-space:nowrap;}
+.brand{font-family:'Orbitron','Space Grotesk',sans-serif;font-size:13px;font-weight:700;letter-spacing:.12em;color:var(--text);white-space:nowrap;text-shadow:0 0 14px rgba(95,208,255,.35);}
 .brand span{color:var(--accent);font-weight:600;font-size:10px;letter-spacing:.22em;
   border:1px solid rgba(95,208,255,0.4);padding:2px 6px;border-radius:5px;margin-left:6px;vertical-align:middle;}
 .topbar .search-wrap{flex:1;max-width:520px;margin:0 auto;position:relative;}
@@ -286,3 +286,84 @@ b{font-variant-numeric:tabular-nums;}
   .leftrail{display:none;}
   .brand span{display:none;}
 }
+
+/* ===================== FUTURISTIC PASS ===================== */
+
+.hidden{display:none !important;}
+
+/* animated aurora accent line under the command bar */
+.topbar::after{
+  content:'';position:absolute;left:0;right:0;bottom:-1px;height:2px;pointer-events:none;
+  background:linear-gradient(90deg,transparent,var(--accent),#9b8bff,var(--current),transparent);
+  background-size:220% 100%;animation:auroraSlide 9s linear infinite;opacity:.75;
+}
+@keyframes auroraSlide{from{background-position:0% 0;}to{background-position:220% 0;}}
+
+/* glowing numerals */
+.st-big b{text-shadow:0 0 16px rgba(95,208,255,.28);}
+.d-temp .big{text-shadow:0 0 22px rgba(95,208,255,.3);}
+.clock b{text-shadow:0 0 10px rgba(95,208,255,.35);}
+
+/* panel lift + neon edge on hover */
+.stat-tile:hover,.dash-card:hover{box-shadow:0 8px 28px rgba(0,0,0,.45),0 0 0 1px rgba(95,208,255,.25),0 0 22px rgba(95,208,255,.08);}
+.layers-panel,.detail,.dashboard,.quake-pop{box-shadow:0 18px 46px rgba(0,0,0,.5),inset 0 1px 0 rgba(255,255,255,.05);}
+.lchip:hover{box-shadow:0 0 14px rgba(95,208,255,.12);}
+
+/* ---- globe/map view toggle ---- */
+.view-toggle{display:flex;border:1px solid var(--line-bright);border-radius:9px;overflow:hidden;background:rgba(0,0,0,.35);}
+.view-toggle .vt{
+  font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;padding:8px 13px;border:none;cursor:pointer;
+  background:transparent;color:var(--text-dim);transition:all .2s ease;
+}
+.view-toggle .vt:hover{color:var(--text);}
+.view-toggle .vt.on{
+  background:linear-gradient(135deg,rgba(95,208,255,.2),rgba(155,139,255,.16));
+  color:var(--accent);text-shadow:0 0 10px rgba(95,208,255,.65);
+}
+
+/* ---- locate me ---- */
+.locate-btn{
+  width:32px;height:32px;border-radius:50%;border:1px solid var(--line-bright);cursor:pointer;
+  background:rgba(0,0,0,.35);color:var(--accent);font-size:15px;line-height:1;
+  transition:all .2s ease;
+}
+.locate-btn:hover{border-color:var(--accent);box-shadow:0 0 14px rgba(95,208,255,.35);}
+.locate-btn.busy{animation:locPulse 1s ease-in-out infinite;}
+@keyframes locPulse{50%{box-shadow:0 0 18px rgba(95,208,255,.6);}}
+
+/* ---- 2D map view ---- */
+#mapViz{position:absolute;inset:0;z-index:1;background:var(--bg-deep);}
+.leaflet-container{background:var(--bg-deep);font-family:'Space Grotesk',sans-serif;}
+.leaflet-control-attribution{
+  background:rgba(8,11,20,.72) !important;color:var(--text-dim) !important;
+  font-size:9px;backdrop-filter:blur(6px);border-radius:6px 0 0 0;
+}
+.leaflet-control-attribution a{color:var(--accent) !important;}
+
+/* neon selection pin on the map */
+.map-pin i{display:block;width:14px;height:14px;border-radius:50%;background:var(--accent);box-shadow:0 0 14px var(--accent);position:relative;}
+.map-pin i::after{content:'';position:absolute;inset:-7px;border-radius:50%;border:1px solid var(--accent);animation:mapPing 2s ease-out infinite;}
+@keyframes mapPing{0%{transform:scale(.55);opacity:.9;}100%{transform:scale(2.3);opacity:0;}}
+
+/* ---- radar control card (map mode) ---- */
+.radar-card{
+  position:absolute;left:14px;bottom:44px;z-index:15;width:236px;
+  background:var(--panel-bg);border:1px solid var(--line-bright);border-radius:12px;
+  padding:12px 14px;backdrop-filter:blur(12px);
+  box-shadow:0 14px 38px rgba(0,0,0,.5),0 0 0 1px rgba(95,208,255,.08);
+}
+.rc-head{display:flex;align-items:center;justify-content:space-between;font-size:9.5px;letter-spacing:.16em;color:var(--text-dim);margin-bottom:9px;}
+.rc-tog{
+  font-family:var(--mono);font-size:9px;letter-spacing:.1em;padding:4px 9px;border-radius:6px;cursor:pointer;
+  background:transparent;border:1px solid var(--line-bright);color:var(--text-dim);transition:all .2s ease;
+}
+.rc-tog.on{background:rgba(76,163,255,.18);border-color:var(--precip);color:var(--precip);text-shadow:0 0 8px rgba(76,163,255,.6);}
+.rc-row{display:flex;align-items:center;gap:7px;}
+.rc-row button{
+  width:28px;height:28px;border-radius:8px;border:1px solid var(--line-bright);cursor:pointer;
+  background:rgba(0,0,0,.3);color:var(--text);font-size:13px;line-height:1;transition:all .2s ease;
+}
+.rc-row button:hover{border-color:var(--accent);box-shadow:0 0 10px rgba(95,208,255,.25);}
+.rc-time{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--text);text-shadow:0 0 8px rgba(95,208,255,.35);}
+.rc-track{height:4px;border-radius:999px;background:rgba(255,255,255,.08);margin-top:10px;overflow:hidden;}
+.rc-track i{display:block;height:100%;width:0;border-radius:999px;background:linear-gradient(90deg,var(--precip),var(--accent));transition:width .3s ease;box-shadow:0 0 8px rgba(76,163,255,.5);}

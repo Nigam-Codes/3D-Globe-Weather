@@ -11,6 +11,7 @@ import { buildConstellations } from './constellations.js';
 import { fetchAurora } from './aurora.js';
 import { fetchQuakes } from './quakes.js';
 import { fetchAQGrid, fetchAQPoint, aqiBand } from './airquality.js';
+import { createMapView } from './mapview.js';
 
 const WMO_CODES = {
   0: 'Clear sky', 1: 'Mainly clear', 2: 'Partly cloudy', 3: 'Overcast',
@@ -252,6 +253,19 @@ function nearestCityName(lat, lng) {
 }
 function fmtCoord(lat, lng) {
   return `${Math.abs(lat).toFixed(1)}°${lat >= 0 ? 'N' : 'S'}, ${Math.abs(lng).toFixed(1)}°${lng >= 0 ? 'E' : 'W'}`;
+}
+
+// reverse geocoding via BigDataCloud's keyless client API — turns an arbitrary
+// clicked point into a real place name ("Shibuya, Japan" instead of 35.7°N, 139.7°E)
+async function reverseGeocode(lat, lng) {
+  try {
+    const res = await fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lng}&localityLanguage=en`);
+    if (!res.ok) return null;
+    const d = await res.json();
+    const local = d.city || d.locality || d.principalSubdivision;
+    if (local && d.countryName) return `${local}, ${d.countryName}`;
+    return d.countryName || null; // open ocean → null, keep coordinates
+  } catch { return null; }
 }
 
 // ---------- moon phase (astronomy-engine, computed locally) ----------
@@ -645,12 +659,24 @@ function setLoading(on) { loadingBadge.classList.toggle('show', on); }
 
 async function selectLocation(lat, lng, name, pinId = null) {
   world.pointOfView({ lat, lng, altitude: 1.6 }, 1200);
+  if (activeView === 'map' && mapView) mapView.flyTo(lat, lng);
   activePoint = { lat, lng, name };
   activePinId = pinId;
   renderPoints();
   updateDetailActionButtons();
 
   document.getElementById('dName').textContent = name || fmtCoord(lat, lng);
+  if (!name) {
+    // resolve a real place name in the background; guard against a newer selection
+    const sel = activePoint;
+    reverseGeocode(lat, lng).then(rn => {
+      if (rn && activePoint === sel) {
+        activePoint.name = rn;
+        document.getElementById('dName').textContent = rn;
+        updateDetailActionButtons();
+      }
+    });
+  }
   document.getElementById('dSub').textContent = 'Local conditions · loading…';
   document.getElementById('dMoon').textContent = moonPhase();
   detail.classList.add('open');
@@ -680,7 +706,8 @@ let activeForecast = null;
 
 function renderDetail(name, lat, lng, data, aq) {
   const c = data.current || {};
-  document.getElementById('dName').textContent = name || fmtCoord(lat, lng);
+  // prefer a reverse-geocoded name that may have resolved while weather loaded
+  document.getElementById('dName').textContent = name || activePoint?.name || fmtCoord(lat, lng);
   document.getElementById('dSub').textContent = 'Local conditions · updated just now';
 
   const hourly = data.hourly;
@@ -869,6 +896,41 @@ async function renderDashboardPanel() {
     });
   } catch { dashboardList.querySelectorAll('.dm span').forEach(s => { s.textContent = '—'; }); }
 }
+
+// ---------- view toggle: 3D globe ↔ 2D map (Leaflet + live radar) ----------
+
+let mapView = null;
+let activeView = 'globe';
+const globeContainerEl = document.getElementById('globeViz');
+const mapContainerEl = document.getElementById('mapViz');
+const radarCardEl = document.getElementById('radarCard');
+
+function setView(view) {
+  activeView = view;
+  document.querySelectorAll('#viewToggle .vt').forEach(b => b.classList.toggle('on', b.dataset.view === view));
+  globeContainerEl.classList.toggle('hidden', view !== 'globe');
+  mapContainerEl.classList.toggle('hidden', view !== 'map');
+  radarCardEl.classList.toggle('hidden', view !== 'map');
+  if (view === 'map') {
+    if (!mapView) mapView = createMapView('mapViz', { onPick: (lat, lng) => selectLocation(lat, lng, null) });
+    mapView.invalidate(); // container was display:none during init/resize
+    if (activePoint) mapView.flyTo(activePoint.lat, activePoint.lng);
+  }
+}
+document.querySelectorAll('#viewToggle .vt').forEach(b => b.addEventListener('click', () => setView(b.dataset.view)));
+
+// ---------- locate me (browser geolocation) ----------
+
+const locateBtn = document.getElementById('locateBtn');
+locateBtn.addEventListener('click', () => {
+  if (!navigator.geolocation) return;
+  locateBtn.classList.add('busy');
+  navigator.geolocation.getCurrentPosition(
+    (pos) => { locateBtn.classList.remove('busy'); selectLocation(pos.coords.latitude, pos.coords.longitude, null); },
+    () => { locateBtn.classList.remove('busy'); },
+    { timeout: 8000 }
+  );
+});
 
 // ---------- zoom controls ----------
 
@@ -1121,12 +1183,12 @@ let frames = 0, lastFpsT = performance.now();
   requestAnimationFrame(fpsLoop);
 })(performance.now());
 
-// ---------- shareable deep links: #layers=temp,aurora,quakes ----------
-// lets a terminal view be bookmarked/shared with its overlays pre-activated
-(function applyHashLayers() {
+// ---------- shareable deep links: #layers=temp,aurora&view=map ----------
+// lets a terminal view be bookmarked/shared with overlays + view pre-activated
+(function applyHash() {
   const m = location.hash.match(/layers=([a-z,]+)/i);
-  if (!m) return;
-  m[1].split(',').filter(k => k in layerState).forEach(k => { if (!layerState[k]) toggleLayer(k); });
+  if (m) m[1].split(',').filter(k => k in layerState).forEach(k => { if (!layerState[k]) toggleLayer(k); });
+  if (/view=map/i.test(location.hash)) setView('map');
 })();
 
 // ---------- init: warm up the live monitor in the background ----------

@@ -4,15 +4,25 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Weather Globe Terminal</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
 <div class="stage">
   <div id="globeViz"></div>
+  <div id="mapViz" class="hidden"></div>
 
   <!-- ===================== TOP COMMAND BAR ===================== -->
   <header class="topbar">
     <div class="brand">◈ WEATHER&nbsp;GLOBE <span>TERMINAL</span></div>
+
+    <div class="view-toggle" id="viewToggle">
+      <button class="vt on" data-view="globe">◐ GLOBE</button>
+      <button class="vt" data-view="map">▦ MAP</button>
+    </div>
 
     <div class="search-wrap">
       <input id="searchInput" type="text" placeholder="Search city, airport, coordinates…" autocomplete="off">
@@ -20,6 +30,7 @@
     </div>
 
     <div class="top-status">
+      <button class="locate-btn" id="locateBtn" title="Fly to my location">◎</button>
       <div class="clock"><b id="utcClock">--:--:--</b><span id="utcDate">UTC</span></div>
       <button class="chip-alert" id="alertChip" title="Significant earthquakes, past 24h">
         ⚠ <b id="alertCount">0</b> ALERTS
@@ -156,6 +167,18 @@
     </div>
   </div>
 
+  <!-- ===================== RADAR CONTROLS (map mode) ===================== -->
+  <div class="radar-card hidden" id="radarCard">
+    <div class="rc-head"><span>◈ LIVE PRECIP RADAR</span><button id="radarToggle" class="rc-tog" title="Toggle radar layer">RADAR</button></div>
+    <div class="rc-row">
+      <button id="radarPrev" title="Previous frame">‹</button>
+      <button id="radarPlay" title="Play / pause">⏸</button>
+      <button id="radarNext" title="Next frame">›</button>
+      <span id="radarTime" class="rc-time">—</span>
+    </div>
+    <div class="rc-track"><i id="radarBar"></i></div>
+  </div>
+
   <!-- ===================== ZOOM CONTROLS ===================== -->
   <div class="map-controls">
     <button id="zoomIn" title="Zoom in">+</button>
@@ -186,6 +209,7 @@
 }
 </script>
 <script src="https://unpkg.com/globe.gl"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script type="module" src="app.js"></script>
 </body>
 </html>
